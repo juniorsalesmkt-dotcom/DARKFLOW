@@ -16,6 +16,7 @@ import {
 import { Page, UploadProgressItem, Video } from '../types';
 import { UploadQueueService } from '../services/UploadQueueService';
 import { VideoMetadataService } from '../services/VideoMetadataService';
+import { UploadDiagnosticPanel } from './UploadDiagnosticPanel';
 
 interface BatchUploadModalProps {
   isOpen: boolean;
@@ -249,6 +250,12 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
         {/* Body */}
         <div className="p-5 flex-1 overflow-y-auto space-y-4">
           
+          {/* Active Upload Diagnostic Panel */}
+          <UploadDiagnosticPanel 
+            selectedFile={items[0]?.file || null}
+            targetPageId={targetPageId}
+          />
+
           {/* Drag & Drop Area */}
           <div
             id="drag-drop-zone"

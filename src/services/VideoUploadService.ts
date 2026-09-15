@@ -148,52 +148,50 @@ export class VideoUploadService {
   static async uploadFile(options: UploadFileOptions): Promise<Video> {
     const { file, userId, pageId, pagePlatform, onProgress, onCancelTrigger } = options;
 
-    // [UPLOAD 01] arquivo selecionado
+    // [DARKFLOW UPLOAD] Validação inicial
     const validation = this.validateFile(file);
     if (!validation.valid) {
+      console.error('[DARKFLOW UPLOAD] Validação falhou:', validation.reason);
       throw new Error(validation.reason);
     }
 
-    // [UPLOAD 02] usuário autenticado
+    // [DARKFLOW UPLOAD] Usuário autenticado
     const user = auth.currentUser;
     const effectiveUid = user?.uid || userId;
     if (!effectiveUid || effectiveUid.trim() === '') {
-      console.error('[UPLOAD 02] usuário NÃO autenticado!');
-      throw new Error('Usuário não autenticado. Faça login no sistema para realizar uploads.');
+      console.error('[DARKFLOW UPLOAD] ERRO: Nenhum usuário autenticado!');
+      throw new Error('ERRO: auth.currentUser === null. Nenhum usuário autenticado no Firebase Auth.');
     }
-    console.log('[UPLOAD 02] usuário autenticado:', effectiveUid, user?.email || '(sessão ativa)');
+    console.log(`[DARKFLOW UPLOAD] Usuário autenticado: UID ${effectiveUid} (${user?.email || 'sessão'})`);
 
-    // [UPLOAD 03] pageId encontrado
+    // [DARKFLOW UPLOAD] PageId
     if (!pageId || pageId.trim() === '') {
-      console.error('[UPLOAD 03] pageId NÃO encontrado!');
-      throw new Error('Página de destino não informada ou inválida.');
+      console.error('[DARKFLOW UPLOAD] ERRO: pageId não informado!');
+      throw new Error('ERRO: Página de destino (pageId) não informada ou inválida.');
     }
-    console.log('[UPLOAD 03] pageId encontrado:', pageId);
+    console.log(`[DARKFLOW UPLOAD] Page ID: ${pageId}`);
 
-    // [UPLOAD 04] Firebase inicializado
+    // [DARKFLOW UPLOAD] Firebase inicializado
     if (!storage || !storage.app) {
-      console.error('[UPLOAD 04] Firebase NÃO inicializado!');
-      throw new Error('Firebase não foi inicializado corretamente.');
+      console.error('[DARKFLOW UPLOAD] ERRO: Firebase App não inicializado!');
+      throw new Error('ERRO: Firebase não foi inicializado corretamente.');
     }
-    console.log('[UPLOAD 04] Firebase inicializado:', storage.app.name, 'Projeto:', storage.app.options.projectId);
+    console.log(`[DARKFLOW UPLOAD] Firebase inicializado: ${storage.app.name} | Projeto: ${storage.app.options.projectId}`);
 
-    // [UPLOAD 05] Storage inicializado
+    // [DARKFLOW UPLOAD] Storage bucket
     const storageBucket = storage.app.options.storageBucket;
-    if (!storageBucket) {
-      console.error('[UPLOAD 05] Storage inicializado: FALHA (bucket ausente)!');
-      throw new Error('Firebase Storage não possui bucket configurado.');
+    if (!storageBucket || storageBucket.trim() === '') {
+      console.error('[DARKFLOW UPLOAD] ERRO: Firebase Storage não possui bucket configurado!');
+      throw new Error('ERRO: Firebase Storage não possui bucket configurado.');
     }
-    console.log('[UPLOAD 05] Storage inicializado. Bucket:', storageBucket);
+    console.log(`[DARKFLOW UPLOAD] Storage bucket: gs://${storageBucket}`);
 
-    // [UPLOAD 06] referência do Storage criada
+    // [DARKFLOW UPLOAD] Referência Storage
     const uniqueVideoId = `vid_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const safeFilename = this.sanitizeFilename(file.name);
     const storagePath = this.buildStoragePath(effectiveUid, pageId, uniqueVideoId, safeFilename);
-    const storageRef = ref(storage, storagePath);
-    console.log('[UPLOAD 06] referência do Storage criada:', storagePath);
 
-    // [UPLOAD 07] upload iniciado
-    console.log('[UPLOAD 07] upload iniciado:', file.name);
+    console.log(`[DARKFLOW UPLOAD] Upload iniciado: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB, ${file.size} bytes)`);
     if (onProgress) {
       onProgress(0, 'uploading', 0, file.size);
     }
@@ -201,132 +199,35 @@ export class VideoUploadService {
     let downloadUrl = '';
     let uploadedStoragePath = storagePath;
     let isCancelled = false;
-    let uploadTask: any = null;
-    let directUploadSucceeded = false;
-
-    // Check cancellation
-    if (onCancelTrigger) {
-      onCancelTrigger(() => {
-        isCancelled = true;
-        console.log('[UPLOAD] cancelamento solicitado pelo usuário:', file.name);
-        if (uploadTask) {
-          try {
-            uploadTask.cancel();
-          } catch (e) {
-            console.warn('Erro ao chamar uploadTask.cancel():', e);
-          }
-        }
-      });
-    }
+    let serverResult: any = null;
 
     try {
-      const uploadMetadata = {
-        contentType: file.type || 'video/mp4',
-        customMetadata: {
-          userId: effectiveUid,
-          pageId,
-          videoId: uniqueVideoId,
-          originalName: file.name
-        }
-      };
-
-      uploadTask = uploadBytesResumable(storageRef, file, uploadMetadata);
-
-      await new Promise<void>((resolve, reject) => {
-        uploadTask.on(
-          'state_changed',
-          (snapshot: any) => {
-            if (isCancelled) {
-              uploadTask.cancel();
-              return;
-            }
-
-            if (snapshot.totalBytes > 0) {
-              const percent = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-              // [UPLOAD 08] progresso recebido
-              console.log(`[UPLOAD 08] progresso recebido: ${percent}% (${snapshot.bytesTransferred}/${snapshot.totalBytes} bytes) - ${file.name}`);
-              if (onProgress) {
-                onProgress(percent, 'uploading', snapshot.bytesTransferred, snapshot.totalBytes);
-              }
-            }
-          },
-          (err: any) => {
-            if (err.code === 'storage/canceled' || isCancelled) {
-              const cancelErr = new Error('Upload cancelado pelo usuário (storage/canceled).');
-              (cancelErr as any).code = 'storage/canceled';
-              reject(cancelErr);
-              return;
-            }
-
-            console.warn('[STORAGE] Erro no upload direto ao Firebase Storage:', err);
-            reject(err);
-          },
-          async () => {
-            try {
-              // [UPLOAD 09] upload concluído
-              console.log('[UPLOAD 09] upload concluído:', file.name);
-
-              // [UPLOAD 10] URL obtida
-              downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-              uploadedStoragePath = uploadTask.snapshot.ref.fullPath;
-              console.log('[UPLOAD 10] URL obtida:', downloadUrl);
-
-              directUploadSucceeded = true;
-              resolve();
-            } catch (urlErr) {
-              console.error('Erro ao obter downloadURL do Storage:', urlErr);
-              reject(urlErr);
-            }
+      console.log('[DARKFLOW UPLOAD] Enviando via DARKFLOW Storage Engine (/api/storage/upload)...');
+      serverResult = await this.uploadViaServerProxy(
+        file,
+        effectiveUid,
+        pageId,
+        uniqueVideoId,
+        (percent, loaded, total) => {
+          console.log(`[DARKFLOW UPLOAD] Progresso: ${percent}% (${loaded}/${total} bytes) - ${file.name}`);
+          if (onProgress) {
+            onProgress(percent, 'uploading', loaded, total);
           }
-        );
-      });
-    } catch (storageError: any) {
-      if (storageError.code === 'storage/canceled' || isCancelled) {
+        },
+        onCancelTrigger
+      );
+
+      downloadUrl = serverResult.downloadUrl || serverResult.publicUrl || `/uploads/${storagePath}`;
+      uploadedStoragePath = serverResult.storagePath || storagePath;
+      console.log('[DARKFLOW UPLOAD] Upload concluído no Storage:', downloadUrl);
+    } catch (uploadErr: any) {
+      if (uploadErr.message?.includes('cancelado')) {
         if (onProgress) onProgress(0, 'cancelled');
         throw new Error('Upload cancelado pelo usuário.');
       }
-
-      console.warn('[UPLOAD] Tentativa de upload direto falhou:', storageError?.message);
-
-      // If direct Firebase Storage failed (e.g. CORS, network restrictions in sandboxed container, or missing client token),
-      // we attempt the robust server-side proxy to guarantee the user's upload succeeds without getting stuck.
-      console.log('[UPLOAD] Acionando upload seguro via backend proxy...');
-      try {
-        const serverResult = await this.uploadViaServerProxy(
-          file,
-          effectiveUid,
-          pageId,
-          uniqueVideoId,
-          (percent, bytesTransferred, totalBytes) => {
-            // [UPLOAD 08] progresso recebido via proxy
-            console.log(`[UPLOAD 08] progresso recebido: ${percent}% (${bytesTransferred}/${totalBytes} bytes) - ${file.name}`);
-            if (onProgress) {
-              onProgress(percent, 'uploading', bytesTransferred, totalBytes);
-            }
-          },
-          onCancelTrigger
-        );
-
-        // [UPLOAD 09] upload concluído
-        console.log('[UPLOAD 09] upload concluído:', file.name);
-
-        downloadUrl = serverResult.downloadUrl || serverResult.publicUrl;
-        uploadedStoragePath = serverResult.storagePath || storagePath;
-
-        // [UPLOAD 10] URL obtida
-        console.log('[UPLOAD 10] URL obtida:', downloadUrl);
-        directUploadSucceeded = true;
-      } catch (proxyError: any) {
-        console.error('[UPLOAD ERROR] Falha no upload:', proxyError);
-        const friendlyMsg = this.getStorageFriendlyError(storageError || proxyError);
-        if (onProgress) onProgress(0, 'failed');
-        throw new Error(friendlyMsg);
-      }
-    }
-
-    if (isCancelled) {
-      if (onProgress) onProgress(0, 'cancelled');
-      throw new Error('Upload cancelado pelo usuário.');
+      console.error('[DARKFLOW UPLOAD] Erro no upload:', uploadErr);
+      if (onProgress) onProgress(0, 'failed');
+      throw new Error(`Falha no upload: ${uploadErr.message || 'Erro de conexão'}`);
     }
 
     // [UPLOAD 11] Firestore iniciado
@@ -337,22 +238,24 @@ export class VideoUploadService {
 
     // Extract quick video metadata (duration, width, height, thumbnail)
     let meta = {
-      duration: 0,
-      width: 1080,
-      height: 1920,
-      thumbnailUrl: ''
+      duration: serverResult?.duration || 0,
+      width: serverResult?.width || 1080,
+      height: serverResult?.height || 1920,
+      thumbnailUrl: serverResult?.thumbnailUrl || ''
     };
 
-    try {
-      const extracted = await VideoMetadataService.extractMetadata(file);
-      meta = {
-        duration: extracted.duration || 0,
-        width: extracted.width || 1080,
-        height: extracted.height || 1920,
-        thumbnailUrl: extracted.thumbnailDataUrl || ''
-      };
-    } catch (metaErr) {
-      console.warn('Extração de metadados não bloqueante:', metaErr);
+    if (!meta.duration || meta.duration === 0 || !meta.thumbnailUrl) {
+      try {
+        const extracted = await VideoMetadataService.extractMetadata(file);
+        meta = {
+          duration: extracted.duration || meta.duration || 10,
+          width: extracted.width || meta.width || 1080,
+          height: extracted.height || meta.height || 1920,
+          thumbnailUrl: extracted.thumbnailDataUrl || meta.thumbnailUrl || ''
+        };
+      } catch (metaErr) {
+        console.warn('Extração de metadados não bloqueante:', metaErr);
+      }
     }
 
     const cleanTitle = file.name.replace(/\.[^/.]+$/, '');
@@ -367,10 +270,10 @@ export class VideoUploadService {
       originalUrl: downloadUrl,
       mimeType: file.type || 'video/mp4',
       fileSize: file.size,
-      duration: meta.duration,
-      width: meta.width,
-      height: meta.height,
-      thumbnailPath: null,
+      duration: meta.duration || 10,
+      width: meta.width || 1080,
+      height: meta.height || 1920,
+      thumbnailPath: serverResult?.thumbnailPath || null,
       thumbnailUrl: meta.thumbnailUrl,
       status: 'READY',
       platform: pagePlatform || 'instagram',

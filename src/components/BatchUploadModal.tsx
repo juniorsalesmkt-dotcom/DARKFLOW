@@ -162,10 +162,12 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
   const uploadingCount = items.filter(i => i.status === 'uploading' || i.status === 'processing').length;
   const waitingCount = items.filter(i => i.status === 'waiting').length;
   const failedCount = items.filter(i => i.status === 'failed').length;
+  const cancelledCount = items.filter(i => i.status === 'cancelled').length;
 
-  const totalProgress = totalCount > 0
-    ? Math.round(items.reduce((acc, i) => acc + i.progress, 0) / totalCount)
-    : 0;
+  // Real aggregate progress based on bytes transferred
+  const { totalBytes, uploadedBytes, overallProgress: totalProgress } = UploadQueueService.getAggregateProgress();
+
+  const allFinished = totalCount > 0 && waitingCount === 0 && uploadingCount === 0;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-4">
@@ -310,7 +312,12 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 <span className="font-bold text-white flex items-center gap-2">
                   {isProcessing ? 'Enviando vídeos para o Storage...' : 'Status da Fila de Upload'}
                 </span>
-                <span className="font-mono text-purple-400 font-bold">{totalProgress}%</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-slate-400 font-mono">
+                    {(uploadedBytes / (1024 * 1024)).toFixed(1)} MB / {(totalBytes / (1024 * 1024)).toFixed(1)} MB
+                  </span>
+                  <span className="font-mono text-purple-400 font-bold">{totalProgress}%</span>
+                </div>
               </div>
 
               {/* Progress Bar */}
@@ -328,6 +335,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                 <span>• Em envio: <strong className="text-purple-400">{uploadingCount}</strong></span>
                 <span>• Aguardando: <strong className="text-slate-300">{waitingCount}</strong></span>
                 {failedCount > 0 && <span>• Falhas: <strong className="text-rose-400">{failedCount}</strong></span>}
+                {cancelledCount > 0 && <span>• Cancelados: <strong className="text-amber-400">{cancelledCount}</strong></span>}
                 <span className="ml-auto text-[10px] text-slate-500 font-mono">Concorrência: 5 simultâneos</span>
               </div>
             </div>
@@ -353,6 +361,8 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                           <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />
                         ) : item.status === 'failed' ? (
                           <AlertCircle className="w-4 h-4 text-rose-400" />
+                        ) : item.status === 'cancelled' ? (
+                          <AlertCircle className="w-4 h-4 text-amber-400" />
                         ) : (
                           <Clock className="w-4 h-4 text-slate-500" />
                         )}
@@ -367,11 +377,13 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                             item.status === 'completed' ? 'text-emerald-400 font-bold' :
                             item.status === 'uploading' ? 'text-purple-400 font-bold' :
                             item.status === 'processing' ? 'text-indigo-400 font-bold' :
+                            item.status === 'cancelled' ? 'text-amber-400 font-bold' :
                             item.status === 'failed' ? 'text-rose-400 font-bold' : 'text-slate-400'
                           }>
                             {item.status === 'completed' && '100% Concluído'}
                             {item.status === 'uploading' && `${item.progress}% Enviando...`}
                             {item.status === 'processing' && 'Processando metadados...'}
+                            {item.status === 'cancelled' && 'Upload cancelado'}
                             {item.status === 'failed' && (item.error || 'Falha no upload')}
                             {item.status === 'waiting' && 'Aguardando na fila'}
                           </span>
@@ -391,7 +403,7 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
                         </button>
                       )}
 
-                      {item.status === 'failed' && (
+                      {(item.status === 'failed' || item.status === 'cancelled') && (
                         <button
                           type="button"
                           onClick={() => retryItem(item.id)}
@@ -471,13 +483,18 @@ export const BatchUploadModal: React.FC<BatchUploadModalProps> = ({
               type="button"
               id="start-upload-btn"
               onClick={startUpload}
-              disabled={isProcessing || waitingCount === 0 || pages.length === 0 || !currentUserId}
+              disabled={isProcessing || (waitingCount === 0 && failedCount === 0 && cancelledCount === 0) || pages.length === 0 || !currentUserId}
               className="px-5 py-2.5 rounded-xl bg-linear-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-xs font-bold text-white shadow-lg shadow-purple-900/30 transition-all flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer active:scale-95"
             >
               {isProcessing ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   <span>Enviando ({completedCount}/{totalCount})...</span>
+                </>
+              ) : allFinished && completedCount > 0 ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                  <span>{completedCount} {completedCount === 1 ? 'vídeo enviado' : 'vídeos enviados'}</span>
                 </>
               ) : (
                 <>

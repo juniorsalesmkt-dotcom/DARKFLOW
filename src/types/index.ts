@@ -134,7 +134,8 @@ export interface UploadProgressItem {
   size: number;
   pageId: string;
   progress: number;
-  status: 'waiting' | 'uploading' | 'processing' | 'completed' | 'failed';
+  status: 'waiting' | 'uploading' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  bytesTransferred?: number;
   error?: string;
   videoRecord?: Video;
   downloadUrl?: string;

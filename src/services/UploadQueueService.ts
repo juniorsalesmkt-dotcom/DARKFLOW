@@ -82,7 +82,7 @@ class UploadQueueServiceImpl {
 
       // Check if file is already queued with same name and size
       const exists = this.items.some(
-        item => item.name === file.name && item.size === file.size && item.status !== 'completed' && item.status !== 'failed'
+        item => item.name === file.name && item.size === file.size && item.status !== 'completed' && item.status !== 'failed' && item.status !== 'cancelled'
       );
       if (exists) {
         continue;
@@ -95,6 +95,7 @@ class UploadQueueServiceImpl {
         size: file.size,
         pageId,
         progress: 0,
+        bytesTransferred: 0,
         status: 'waiting'
       };
 
@@ -104,6 +105,25 @@ class UploadQueueServiceImpl {
 
     this.notify();
     return { added: addedCount, rejected };
+  }
+
+  /**
+   * Calculate real aggregate progress considering bytes actually transferred
+   */
+  getAggregateProgress(): { totalBytes: number; uploadedBytes: number; overallProgress: number } {
+    const totalBytes = this.items.reduce((sum, item) => sum + (item.size || 0), 0);
+    const uploadedBytes = this.items.reduce((sum, item) => {
+      if (item.status === 'completed') {
+        return sum + (item.size || 0);
+      }
+      if (item.status === 'uploading' || item.status === 'processing') {
+        return sum + (item.bytesTransferred || Math.round(((item.progress || 0) / 100) * (item.size || 0)));
+      }
+      return sum;
+    }, 0);
+
+    const overallProgress = totalBytes > 0 ? Math.min(100, Math.round((uploadedBytes / totalBytes) * 100)) : 0;
+    return { totalBytes, uploadedBytes, overallProgress };
   }
 
   /**
@@ -150,22 +170,23 @@ class UploadQueueServiceImpl {
       if (!nextItem) break;
 
       this.activeWorkers++;
-      this.updateItem(nextItem.id, { status: 'uploading', progress: 1 });
+      this.updateItem(nextItem.id, { status: 'uploading', progress: 0, bytesTransferred: 0, error: undefined });
 
       (async (item: UploadProgressItem) => {
-        let cancelTrigger: (() => void) | undefined;
-
         try {
           const videoDoc = await VideoUploadService.uploadFile({
             file: item.file,
             userId,
             pageId: item.pageId,
             pagePlatform,
-            onProgress: (pct, stage) => {
-              this.updateItem(item.id, { progress: pct, status: stage });
+            onProgress: (pct, stage, bytesTransferred) => {
+              this.updateItem(item.id, {
+                progress: pct,
+                status: stage,
+                bytesTransferred: bytesTransferred || Math.round((pct / 100) * item.size)
+              });
             },
             onCancelTrigger: (cancelFn) => {
-              cancelTrigger = cancelFn;
               this.updateItem(item.id, { cancelFn });
             }
           });
@@ -173,6 +194,7 @@ class UploadQueueServiceImpl {
           this.updateItem(item.id, {
             status: 'completed',
             progress: 100,
+            bytesTransferred: item.size,
             videoRecord: videoDoc,
             downloadUrl: videoDoc.downloadUrl
           });
@@ -189,10 +211,11 @@ class UploadQueueServiceImpl {
           });
         } catch (err: any) {
           console.error(`[UPLOAD ERROR] ${item.name}:`, err);
-          const isCancel = err?.message?.includes('cancelado');
+          const isCancel = err?.message?.includes('cancelado') || err?.code === 'storage/canceled';
           this.updateItem(item.id, {
-            status: 'failed',
-            error: isCancel ? 'Upload cancelado' : (err?.message || 'Falha no upload')
+            status: isCancel ? 'cancelled' : 'failed',
+            error: isCancel ? 'Upload cancelado pelo usuário' : (err?.message || 'Falha no upload'),
+            progress: isCancel ? 0 : item.progress
           });
         } finally {
           this.activeWorkers--;
@@ -215,7 +238,7 @@ class UploadQueueServiceImpl {
           console.warn('Error invoking cancelFn:', e);
         }
       }
-      this.updateItem(id, { status: 'failed', error: 'Upload cancelado' });
+      this.updateItem(id, { status: 'cancelled', error: 'Upload cancelado pelo usuário' });
     }
   }
 
@@ -224,8 +247,8 @@ class UploadQueueServiceImpl {
    */
   retryItem(id: string, userId: string, pagePlatform?: PlatformType) {
     const item = this.items.find(i => i.id === id);
-    if (item && item.status === 'failed') {
-      this.updateItem(id, { status: 'waiting', progress: 0, error: undefined });
+    if (item && (item.status === 'failed' || item.status === 'cancelled')) {
+      this.updateItem(id, { status: 'waiting', progress: 0, bytesTransferred: 0, error: undefined });
       this.start(userId, pagePlatform);
     }
   }
@@ -235,9 +258,10 @@ class UploadQueueServiceImpl {
    */
   retryAllFailed(userId: string, pagePlatform?: PlatformType) {
     this.items.forEach(item => {
-      if (item.status === 'failed') {
+      if (item.status === 'failed' || item.status === 'cancelled') {
         item.status = 'waiting';
         item.progress = 0;
+        item.bytesTransferred = 0;
         item.error = undefined;
       }
     });
@@ -249,34 +273,55 @@ class UploadQueueServiceImpl {
    * Remove item from list
    */
   removeItem(id: string) {
-    const item = this.items.find(i => i.id === id);
-    if (item && item.status === 'uploading') {
-      this.cancelItem(id);
+    const idx = this.items.findIndex(i => i.id === id);
+    if (idx !== -1) {
+      const item = this.items[idx];
+      if (item.status === 'uploading' && item.cancelFn) {
+        try {
+          item.cancelFn();
+        } catch (e) {
+          console.warn('Error cancelling on remove:', e);
+        }
+      }
+      this.items.splice(idx, 1);
+      this.notify();
     }
-    this.items = this.items.filter(i => i.id !== id);
-    this.notify();
   }
 
   /**
-   * Clear all completed items
+   * Clear all completed and cancelled items
    */
   clearCompleted() {
-    this.items = this.items.filter(i => i.status !== 'completed');
+    this.items = this.items.filter(i => i.status !== 'completed' && i.status !== 'cancelled');
     this.notify();
   }
 
   /**
-   * Clear all items
+   * Clear all items in queue
    */
   clearAll() {
-    if (this.isProcessing) return;
+    this.items.forEach(item => {
+      if (item.status === 'uploading' && item.cancelFn) {
+        try {
+          item.cancelFn();
+        } catch (e) {
+          console.warn('Error cancelling on clearAll:', e);
+        }
+      }
+    });
     this.items = [];
+    this.activeWorkers = 0;
+    this.isProcessing = false;
+    this.sessionCreatedVideos = [];
     this.notify();
   }
 
-  private updateItem(id: string, updates: Partial<UploadProgressItem>) {
-    this.items = this.items.map(item => (item.id === id ? { ...item, ...updates } : item));
-    this.notify();
+  private updateItem(id: string, partial: Partial<UploadProgressItem>) {
+    const item = this.items.find(i => i.id === id);
+    if (item) {
+      Object.assign(item, partial);
+      this.notify();
+    }
   }
 }
 

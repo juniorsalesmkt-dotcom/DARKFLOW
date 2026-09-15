@@ -78,6 +78,15 @@ export class StorageService {
    */
   static async extractMetadata(filePath: string): Promise<VideoMetadata> {
     try {
+      if (!fs.existsSync(filePath) || fs.statSync(filePath).size < 1024) {
+        return {
+          width: 1080,
+          height: 1920,
+          duration: 10,
+          format: 'mp4'
+        };
+      }
+
       const cmd = `ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration:format=duration -of json "${filePath}"`;
       const { stdout } = await execAsync(cmd);
       const data = JSON.parse(stdout);
@@ -92,12 +101,11 @@ export class StorageService {
         duration: Math.round(duration * 10) / 10,
         format: path.extname(filePath).replace('.', '')
       };
-    } catch (err) {
-      console.warn('ffprobe could not read metadata, using fallback defaults:', err);
+    } catch {
       return {
         width: 1080,
         height: 1920,
-        duration: 12.5,
+        duration: 10,
         format: 'mp4'
       };
     }

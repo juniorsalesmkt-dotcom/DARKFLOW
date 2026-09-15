@@ -217,10 +217,18 @@ async function startServer() {
   });
 
   // Dedicated Storage Upload for Darkflow Multi-Page video assets
-  app.post('/api/storage/upload', upload.fields([
-    { name: 'video', maxCount: 1 },
-    { name: 'thumbnail', maxCount: 1 }
-  ]), async (req, res) => {
+  app.post('/api/storage/upload', (req, res, next) => {
+    upload.fields([
+      { name: 'video', maxCount: 1 },
+      { name: 'thumbnail', maxCount: 1 }
+    ])(req, res, (err) => {
+      if (err) {
+        console.error('[STORAGE UPLOAD MULTER ERROR]:', err);
+        return res.status(400).json({ error: err.message || 'Erro ao processar arquivo de upload' });
+      }
+      next();
+    });
+  }, async (req, res) => {
     try {
       const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
       const videoFile = files?.['video']?.[0];
@@ -249,7 +257,7 @@ async function startServer() {
 
       if (thumbFile) {
         thumbnailUrl = `/uploads/users/${userId}/pages/${pageId}/thumbnails/${videoId}.jpg`;
-      } else {
+      } else if (videoFile.size > 1024) {
         const generatedThumbDir = path.join(UPLOADS_DIR, 'users', userId, 'pages', pageId, 'thumbnails');
         if (!fs.existsSync(generatedThumbDir)) {
           fs.mkdirSync(generatedThumbDir, { recursive: true });
@@ -258,9 +266,11 @@ async function startServer() {
         try {
           const cmd = `ffmpeg -y -ss 00:00:01 -i "${videoFile.path}" -vframes 1 -q:v 2 "${fullThumbFile}"`;
           await execAsync(cmd);
-          thumbnailUrl = `/uploads/users/${userId}/pages/${pageId}/thumbnails/${videoId}.jpg`;
-        } catch (err) {
-          console.warn('ffmpeg thumbnail capture error, fallback:', err);
+          if (fs.existsSync(fullThumbFile) && fs.statSync(fullThumbFile).size > 0) {
+            thumbnailUrl = `/uploads/users/${userId}/pages/${pageId}/thumbnails/${videoId}.jpg`;
+          }
+        } catch {
+          // Graceful fallback without breaking upload
         }
       }
 
@@ -646,6 +656,12 @@ async function startServer() {
     });
 
     res.status(201).json(videoRecord);
+  });
+
+  // Ensure all API errors return JSON rather than falling through to SPA HTML
+  app.use('/api', (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('[API ERROR MIDDLEWARE]:', err);
+    res.status(err.status || 500).json({ error: err?.message || 'Erro interno no servidor de API' });
   });
 
   // ==========================================

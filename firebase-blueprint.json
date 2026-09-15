@@ -1,0 +1,207 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Registered user profile and subscription plan",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 150 },
+        "plan": { "type": "string", "enum": ["FREE", "PRO", "ENTERPRISE"] },
+        "avatarUrl": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "email", "plan", "createdAt"]
+    },
+    "Page": {
+      "title": "Page",
+      "description": "Content page or project managed by the user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string", "maxLength": 120 },
+        "username": { "type": "string", "maxLength": 80 },
+        "platform": { "type": "string", "enum": ["instagram", "tiktok", "youtube_shorts", "facebook", "generic"] },
+        "avatarUrl": { "type": "string", "maxLength": 500 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "name", "username", "platform", "createdAt"]
+    },
+    "Template": {
+      "title": "Template",
+      "description": "Visual video layout template with VIDEO_PLACEHOLDER and layer definitions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "pageId": { "type": "string" },
+        "name": { "type": "string", "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 500 },
+        "width": { "type": "number" },
+        "height": { "type": "number" },
+        "aspectRatio": { "type": "string" },
+        "background": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
+        "elements": { "type": "array" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "name", "width", "height", "elements", "createdAt"]
+    },
+    "Video": {
+      "title": "Video",
+      "description": "Raw or imported video metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "pageId": { "type": "string" },
+        "name": { "type": "string", "maxLength": 200 },
+        "originalUrl": { "type": "string" },
+        "storagePath": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
+        "duration": { "type": "number" },
+        "width": { "type": "number" },
+        "height": { "type": "number" },
+        "platform": { "type": "string" },
+        "source": { "type": "string" },
+        "status": { "type": "string", "enum": ["original", "queued", "processing", "processed", "error"] },
+        "tags": { "type": "array" },
+        "sizeBytes": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "pageId", "name", "originalUrl", "status", "createdAt"]
+    },
+    "Production": {
+      "title": "Production",
+      "description": "Batch processing production job",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "pageId": { "type": "string" },
+        "templateId": { "type": "string" },
+        "templateName": { "type": "string" },
+        "title": { "type": "string" },
+        "total": { "type": "number" },
+        "completed": { "type": "number" },
+        "processing": { "type": "number" },
+        "queued": { "type": "number" },
+        "failed": { "type": "number" },
+        "status": { "type": "string", "enum": ["queued", "processing", "completed", "failed", "cancelled"] },
+        "progress": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "pageId", "templateId", "title", "total", "status", "createdAt"]
+    },
+    "ProductionItem": {
+      "title": "ProductionItem",
+      "description": "Individual video rendering task inside a production",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "productionId": { "type": "string" },
+        "videoId": { "type": "string" },
+        "videoName": { "type": "string" },
+        "originalVideoUrl": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
+        "templateId": { "type": "string" },
+        "status": { "type": "string", "enum": ["queued", "processing", "completed", "failed", "cancelled"] },
+        "progress": { "type": "number" },
+        "outputPath": { "type": "string" },
+        "outputVideoUrl": { "type": "string" },
+        "error": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "productionId", "videoId", "templateId", "status", "progress", "createdAt"]
+    },
+    "Export": {
+      "title": "Export",
+      "description": "Exported batch download record and ZIP references",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "productionId": { "type": "string" },
+        "productionTitle": { "type": "string" },
+        "totalVideos": { "type": "number" },
+        "downloadUrl": { "type": "string" },
+        "zipStoragePath": { "type": "string" },
+        "zipSizeFormatted": { "type": "string" },
+        "status": { "type": "string", "enum": ["ready", "generating", "failed"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "productionId", "totalVideos", "status", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "User notification alert for finished tasks or system messages",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string", "enum": ["info", "success", "warning", "error"] },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "title", "message", "type", "read", "createdAt"]
+    },
+    "Tag": {
+      "title": "Tag",
+      "description": "Tag assigned to organize videos",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string", "maxLength": 60 },
+        "color": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "name", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profile document"
+    },
+    "/pages/{pageId}": {
+      "schema": { "$ref": "#/entities/Page" },
+      "description": "User pages"
+    },
+    "/templates/{templateId}": {
+      "schema": { "$ref": "#/entities/Template" },
+      "description": "Visual layout templates"
+    },
+    "/videos/{videoId}": {
+      "schema": { "$ref": "#/entities/Video" },
+      "description": "Video catalog entries"
+    },
+    "/productions/{productionId}": {
+      "schema": { "$ref": "#/entities/Production" },
+      "description": "Batch video rendering productions"
+    },
+    "/productions/{productionId}/items/{itemId}": {
+      "schema": { "$ref": "#/entities/ProductionItem" },
+      "description": "Individual production items"
+    },
+    "/exports/{exportId}": {
+      "schema": { "$ref": "#/entities/Export" },
+      "description": "ZIP exports"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "User notifications"
+    },
+    "/tags/{tagId}": {
+      "schema": { "$ref": "#/entities/Tag" },
+      "description": "User tags"
+    }
+  }
+}

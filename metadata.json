@@ -1,0 +1,6 @@
+{
+  "name": "DARKFLOW",
+  "description": "Plataforma SaaS full-stack para automação, gestão de páginas, editor visual de templates e produção de vídeos em massa.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

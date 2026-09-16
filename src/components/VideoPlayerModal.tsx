@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Download, Play, Info } from 'lucide-react';
 import { Video } from '../types/index.js';
+import { LocalMediaStorage } from '../services/LocalMediaStorage.js';
 
 interface VideoPlayerModalProps {
   video: Partial<Video> | null;
@@ -9,6 +10,29 @@ interface VideoPlayerModalProps {
 
 export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({ video, onClose }) => {
   if (!video) return null;
+
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function resolveSource() {
+      const rawUrl = video?.originalUrl || video?.downloadUrl || video?.sourceUrl;
+      if (rawUrl && !rawUrl.startsWith('local://')) {
+        setResolvedUrl(rawUrl);
+        return;
+      }
+      if (video?.id) {
+        const local = await LocalMediaStorage.getVideoUrl(video.id);
+        if (isMounted && local) {
+          setResolvedUrl(local);
+          return;
+        }
+      }
+      setResolvedUrl(rawUrl || null);
+    }
+    resolveSource();
+    return () => { isMounted = false; };
+  }, [video]);
 
   return (
     <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
@@ -29,9 +53,9 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({ video, onClo
 
         {/* Video Player */}
         <div className="relative bg-black flex items-center justify-center min-h-[360px] max-h-[520px]">
-          {(video.originalUrl || video.downloadUrl || video.sourceUrl) ? (
+          {resolvedUrl ? (
             <video
-              src={video.originalUrl || video.downloadUrl || video.sourceUrl}
+              src={resolvedUrl}
               controls
               autoPlay
               playsInline
@@ -51,10 +75,10 @@ export const VideoPlayerModal: React.FC<VideoPlayerModalProps> = ({ video, onClo
             {video.width && video.height && <span>Resolução: {video.width}x{video.height}</span>}
           </div>
 
-          {(video.originalUrl || video.downloadUrl || video.sourceUrl) && (
+          {resolvedUrl && (
             <a
-              href={video.originalUrl || video.downloadUrl || video.sourceUrl}
-              download
+              href={resolvedUrl}
+              download={video.name ? `${video.name}.mp4` : 'video.mp4'}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-md transition-colors"
             >
               <Download className="w-3.5 h-3.5" />

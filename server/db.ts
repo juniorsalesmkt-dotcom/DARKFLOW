@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { 
   User, Page, Template, Video, Production, 
-  ProductionItem, ExportBatch, AppNotification, Tag 
+  ProductionItem, ExportBatch, AppNotification, Tag,
+  ImportBatch, ImportJob 
 } from '../src/types/index.js';
 
 interface DatabaseSchema {
@@ -15,6 +16,8 @@ interface DatabaseSchema {
   exports: ExportBatch[];
   notifications: AppNotification[];
   tags: Tag[];
+  importBatches?: ImportBatch[];
+  importJobs?: ImportJob[];
 }
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -235,7 +238,10 @@ export class Database {
     try {
       if (fs.existsSync(DB_FILE)) {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        parsed.importBatches = parsed.importBatches || [];
+        parsed.importJobs = parsed.importJobs || [];
+        return parsed;
       }
     } catch (e) {
       console.error('Error loading database file, initializing defaults:', e);
@@ -260,7 +266,9 @@ export class Database {
           createdAt: new Date().toISOString()
         }
       ],
-      tags: initialTags
+      tags: initialTags,
+      importBatches: [],
+      importJobs: []
     };
 
     this.saveData(defaultData);
@@ -429,6 +437,9 @@ export class Database {
   getProductionItems(productionId: string) {
     return this.data.productionItems.filter(i => i.productionId === productionId);
   }
+  getProductionItem(id: string) {
+    return this.data.productionItems.find(i => i.id === id) || null;
+  }
 
   // Exports
   getExports() {
@@ -488,6 +499,80 @@ export class Database {
     this.data.tags.push(tag);
     this.save();
     return tag;
+  }
+
+  // Import Batches & Jobs (PROMPT 4)
+  getImportBatches(userId?: string, pageId?: string): ImportBatch[] {
+    if (!this.data.importBatches) this.data.importBatches = [];
+    return this.data.importBatches
+      .filter(b => (!userId || b.userId === userId) && (!pageId || b.pageId === pageId))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  getImportBatch(id: string): ImportBatch | null {
+    if (!this.data.importBatches) this.data.importBatches = [];
+    const batch = this.data.importBatches.find(b => b.id === id);
+    if (!batch) return null;
+    const items = this.getImportJobs(id);
+    return { ...batch, items };
+  }
+
+  createImportBatch(batch: ImportBatch, items: ImportJob[]): ImportBatch {
+    if (!this.data.importBatches) this.data.importBatches = [];
+    if (!this.data.importJobs) this.data.importJobs = [];
+    this.data.importBatches.unshift(batch);
+    this.data.importJobs.push(...items);
+    this.save();
+    return batch;
+  }
+
+  updateImportBatch(id: string, partial: Partial<ImportBatch>): ImportBatch | null {
+    if (!this.data.importBatches) this.data.importBatches = [];
+    const idx = this.data.importBatches.findIndex(b => b.id === id);
+    if (idx !== -1) {
+      this.data.importBatches[idx] = { 
+        ...this.data.importBatches[idx], 
+        ...partial, 
+        updatedAt: new Date().toISOString() 
+      };
+      this.save();
+      return this.data.importBatches[idx];
+    }
+    return null;
+  }
+
+  getImportJobs(batchId: string): ImportJob[] {
+    if (!this.data.importJobs) this.data.importJobs = [];
+    return this.data.importJobs.filter(j => j.batchId === batchId);
+  }
+
+  getImportJob(jobId: string): ImportJob | null {
+    if (!this.data.importJobs) this.data.importJobs = [];
+    return this.data.importJobs.find(j => j.id === jobId) || null;
+  }
+
+  updateImportJob(jobId: string, partial: Partial<ImportJob>): ImportJob | null {
+    if (!this.data.importJobs) this.data.importJobs = [];
+    const idx = this.data.importJobs.findIndex(j => j.id === jobId);
+    if (idx !== -1) {
+      this.data.importJobs[idx] = { 
+        ...this.data.importJobs[idx], 
+        ...partial, 
+        updatedAt: new Date().toISOString() 
+      };
+      this.save();
+      return this.data.importJobs[idx];
+    }
+    return null;
+  }
+
+  findExistingVideoBySource(userId: string, pageId: string, source: string, sourceContentId: string): Video | null {
+    return this.data.videos.find(v => 
+      v.userId === userId && 
+      v.pageId === pageId && 
+      v.source === source && 
+      v.sourceContentId === sourceContentId
+    ) || null;
   }
 }
 

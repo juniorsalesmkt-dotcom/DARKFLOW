@@ -284,4 +284,37 @@ export class VideoService {
   static async batchArchiveVideos(videoIds: string[]): Promise<void> {
     return this.batchArchive(videoIds);
   }
+
+  /**
+   * Check if a content from an external source already exists for this page/user
+   */
+  static async checkDuplicate(userId: string, pageId: string, source: string, sourceContentId: string): Promise<Video | null> {
+    try {
+      const q = query(
+        collection(db, this.collectionName),
+        where('userId', '==', userId),
+        where('pageId', '==', pageId),
+        where('source', '==', source),
+        where('sourceContentId', '==', sourceContentId)
+      );
+      const snapshot = await getDocs(q);
+      if (!snapshot.empty) {
+        return { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as Video;
+      }
+    } catch {
+      // Fallback via server API
+      try {
+        const res = await fetch('/api/miner/check-duplicate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, pageId, source, sourceContentId })
+        });
+        const data = await res.json();
+        return data.video || null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
 }

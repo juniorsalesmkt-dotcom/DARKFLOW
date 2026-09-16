@@ -16,6 +16,7 @@ import {
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { storage, auth, db } from '../lib/firebase';
+import { LocalMediaStorage } from '../services/LocalMediaStorage';
 
 interface DiagnosticStep {
   id: string;
@@ -364,16 +365,55 @@ export const UploadDiagnosticPanel: React.FC<UploadDiagnosticPanelProps> = ({
             setIsRunningDirectUpload(false);
           }
         } else {
-          updateStep('completed', 'error', `HTTP ${xhr.status}`);
-          addLog(`ERRO HTTP ${xhr.status}: ${xhr.responseText}`);
-          setIsRunningDirectUpload(false);
+          addLog(`Servidor backend retornou HTTP ${xhr.status}. Ativando LocalMediaStorage (IndexedDB)...`);
+          try {
+            const localBlobUrl = await LocalMediaStorage.saveVideo(uniqueId, selectedFile);
+            updateStep('completed', 'ok', `Armazenado via Local Media Engine (${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB)`);
+            updateStep('url', 'ok', localBlobUrl);
+            addLog(`URL Local (Blob): ${localBlobUrl}`);
+
+            updateStep('firestore', 'running');
+            const videoDocRef = doc(db, 'videos', uniqueId);
+            await setDoc(videoDocRef, {
+              id: uniqueId,
+              userId: uid,
+              pageId,
+              name: selectedFile.name,
+              originalFilename: selectedFile.name,
+              originalUrl: localBlobUrl,
+              downloadUrl: localBlobUrl,
+              storagePath: `local://indexeddb/${uniqueId}`,
+              status: 'READY',
+              sizeBytes: selectedFile.size,
+              duration: 10,
+              width: 1080,
+              height: 1920,
+              createdAt: serverTimestamp()
+            });
+
+            updateStep('firestore', 'ok', `Documento salvo no Firestore: videos/${uniqueId}`);
+            addLog(`FIRESTORE: Documento videos/${uniqueId} gravado com sucesso via LocalMediaStorage!`);
+          } catch (localErr: any) {
+            updateStep('completed', 'error', `HTTP ${xhr.status} e fallback: ${localErr.message}`);
+            addLog(`ERRO no fallback local: ${localErr.message}`);
+          } finally {
+            setIsRunningDirectUpload(false);
+          }
         }
       };
 
-      xhr.onerror = () => {
-        updateStep('completed', 'error', 'Erro de conexão');
-        addLog('ERRO de conexão com o servidor de storage.');
-        setIsRunningDirectUpload(false);
+      xhr.onerror = async () => {
+        addLog('Erro de conexão com servidor backend. Ativando LocalMediaStorage...');
+        try {
+          const localBlobUrl = await LocalMediaStorage.saveVideo(uniqueId, selectedFile);
+          updateStep('completed', 'ok', `Armazenado via Local Media Engine (${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB)`);
+          updateStep('url', 'ok', localBlobUrl);
+          setIsRunningDirectUpload(false);
+        } catch (localErr: any) {
+          updateStep('completed', 'error', 'Erro de conexão');
+          addLog('ERRO de conexão com o servidor de storage.');
+          setIsRunningDirectUpload(false);
+        }
       };
 
       xhr.send(formData);

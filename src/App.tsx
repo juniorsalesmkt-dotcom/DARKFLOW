@@ -352,7 +352,7 @@ export default function App() {
   };
 
   // Handler: Launch production
-  const handleCreateProduction = async (data: { pageId: string; templateId: string; videoIds: string[]; title?: string }) => {
+  const handleCreateProduction = async (data: { pageId: string; templateId: string; videoIds: string[]; title?: string; audioMode?: 'ORIGINAL' | 'MUTE' }) => {
     if (!firebaseUser?.uid) return;
     const res = await ProductionService.createProduction(firebaseUser.uid, data);
     const updatedProd = await ProductionService.getProductions(firebaseUser.uid);
@@ -535,11 +535,25 @@ export default function App() {
             <MineradorView
               pages={pages}
               selectedPageId={selectedPageId}
+              userId={firebaseUser?.uid || 'usr_darkflow_demo'}
               onVideoImported={(video) => {
                 setVideos(prev => [video, ...prev]);
+                if (firebaseUser?.uid) {
+                  VideoService.getVideos(firebaseUser.uid).then(setVideos);
+                }
                 setCurrentTab('BIBLIOTECA');
               }}
               onNavigateToSettings={() => setCurrentTab('CONFIGURACOES')}
+              onNavigateToLibrary={() => {
+                if (firebaseUser?.uid) {
+                  VideoService.getVideos(firebaseUser.uid).then(setVideos);
+                }
+                setCurrentTab('BIBLIOTECA');
+              }}
+              onStartProduction={() => {
+                setPreselectedVideoIds([]);
+                setCurrentTab('PRODUCAO');
+              }}
             />
           )}
 

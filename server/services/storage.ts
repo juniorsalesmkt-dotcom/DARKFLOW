@@ -181,4 +181,140 @@ export class StorageService {
       };
     }
   }
+
+  /**
+   * Download external video asset into users/{userId}/pages/{pageId}/originals/imported/{uniqueId}_{filename}
+   * with real byte stream tracking and ffmpeg validation
+   */
+  static async downloadAndSaveImportedAsset(
+    userId: string,
+    pageId: string,
+    downloadUrl: string,
+    uniqueId: string,
+    filenameHint: string = 'imported_video.mp4',
+    onProgress?: (progress: number, bytesDownloaded: number, totalBytes: number) => void
+  ): Promise<{
+    storagePath: string;
+    publicUrl: string;
+    thumbnailUrl: string;
+    duration: number;
+    width: number;
+    height: number;
+    fileSize: number;
+    mimeType: string;
+  }> {
+    const importedDir = path.join(UPLOADS_DIR, 'users', userId, 'pages', pageId, 'originals', 'imported');
+    ensureDirectory(importedDir);
+
+    const ext = path.extname(filenameHint) || '.mp4';
+    const baseName = path.basename(filenameHint, ext).replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+    const filename = `${uniqueId}_${baseName}${ext}`;
+    const destinationPath = path.join(importedDir, filename);
+
+    // If downloadUrl is a local file already (e.g. /uploads/...)
+    if (downloadUrl.startsWith('/uploads/')) {
+      const localSourcePath = path.join(process.cwd(), downloadUrl);
+      if (fs.existsSync(localSourcePath)) {
+        fs.copyFileSync(localSourcePath, destinationPath);
+        const stats = fs.statSync(destinationPath);
+        const meta = await this.extractMetadata(destinationPath);
+        const thumbUrl = await this.generateThumbnail(destinationPath);
+        return {
+          storagePath: destinationPath,
+          publicUrl: `/uploads/users/${userId}/pages/${pageId}/originals/imported/${filename}`,
+          thumbnailUrl: thumbUrl,
+          duration: meta.duration,
+          width: meta.width,
+          height: meta.height,
+          fileSize: stats.size,
+          mimeType: `video/${meta.format || 'mp4'}`
+        };
+      }
+    }
+
+    // Stream download over HTTP/HTTPS
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120000); // 2 minute timeout
+
+    try {
+      const response = await fetch(downloadUrl, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'DARKFLOW-Media-Importer/1.0 (+https://darkflow.io)'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Servidor remoto respondeu com status ${response.status}: ${response.statusText}`);
+      }
+
+      const contentLength = response.headers.get('content-length');
+      const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+      let downloadedBytes = 0;
+
+      if (!response.body) {
+        throw new Error('Corpo de resposta vazio ao tentar baixar o arquivo.');
+      }
+
+      const fileStream = fs.createWriteStream(destinationPath);
+
+      // Node.js web stream reader
+      const reader = response.body.getReader();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        if (value) {
+          fileStream.write(Buffer.from(value));
+          downloadedBytes += value.length;
+          if (totalBytes > 0 && onProgress) {
+            const pct = Math.min(99, Math.round((downloadedBytes / totalBytes) * 100));
+            onProgress(pct, downloadedBytes, totalBytes);
+          } else if (onProgress) {
+            onProgress(50, downloadedBytes, 0);
+          }
+        }
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        fileStream.end((err?: Error | null) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      clearTimeout(timeout);
+
+      const stats = fs.statSync(destinationPath);
+      if (stats.size === 0) {
+        throw new Error('Arquivo baixado está vazio.');
+      }
+
+      // Extract metadata with ffprobe
+      const metadata = await this.extractMetadata(destinationPath);
+      // Extract real thumbnail
+      const thumbnailUrl = await this.generateThumbnail(destinationPath);
+
+      const relativeUrl = `/uploads/users/${userId}/pages/${pageId}/originals/imported/${filename}`;
+
+      return {
+        storagePath: destinationPath,
+        publicUrl: relativeUrl,
+        thumbnailUrl,
+        duration: metadata.duration || 10,
+        width: metadata.width || 1080,
+        height: metadata.height || 1920,
+        fileSize: stats.size,
+        mimeType: `video/${metadata.format || 'mp4'}`
+      };
+    } catch (err: any) {
+      clearTimeout(timeout);
+      // Clean up partial file on failure
+      if (fs.existsSync(destinationPath)) {
+        try { fs.unlinkSync(destinationPath); } catch {}
+      }
+      throw err;
+    }
+  }
 }

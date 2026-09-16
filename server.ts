@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import util from 'util';
 import { createServer as createViteServer } from 'vite';
 
@@ -10,7 +10,8 @@ import { db } from './server/db.js';
 import { upload, StorageService, UPLOADS_DIR } from './server/services/storage.js';
 import { queueService } from './server/services/queue.js';
 import { ZipService } from './server/services/zip.js';
-import { AdapterManager } from './server/services/adapters.js';
+import { AdapterManager, ContentSourceService } from './server/services/adapters.js';
+import { importQueueService } from './server/services/importQueue.js';
 import { Video, Page, Template, Production, ProductionItem } from './src/types/index.js';
 
 async function startServer() {
@@ -31,6 +32,17 @@ async function startServer() {
     }
   }));
 
+  // CORS and pre-flight handling for API endpoints
+  app.use('/api', (req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-user-id, x-page-id, x-video-id');
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
   // ==========================================
   // API ROUTES
   // ==========================================
@@ -47,7 +59,7 @@ async function startServer() {
   app.get('/api/settings/diagnostics', (req, res) => {
     let ffmpegInstalled = false;
     try {
-      require('child_process').execSync('ffmpeg -version');
+      execSync('ffmpeg -version');
       ffmpegInstalled = true;
     } catch {
       ffmpegInstalled = false;
@@ -55,7 +67,7 @@ async function startServer() {
 
     const adapters = AdapterManager.getAllAdapters().map(a => ({
       platform: a.platformId,
-      name: a.platformName,
+      name: a.name,
       configured: a.isConfigured()
     }));
 
@@ -217,86 +229,92 @@ async function startServer() {
   });
 
   // Dedicated Storage Upload for Darkflow Multi-Page video assets
-  app.post('/api/storage/upload', (req, res, next) => {
-    upload.fields([
-      { name: 'video', maxCount: 1 },
-      { name: 'thumbnail', maxCount: 1 }
-    ])(req, res, (err) => {
-      if (err) {
-        console.error('[STORAGE UPLOAD MULTER ERROR]:', err);
-        return res.status(400).json({ error: err.message || 'Erro ao processar arquivo de upload' });
-      }
-      next();
-    });
-  }, async (req, res) => {
-    try {
-      const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
-      const videoFile = files?.['video']?.[0];
-      const thumbFile = files?.['thumbnail']?.[0];
-      const userId = (req.headers['x-user-id'] as string) || req.body.userId || 'default_user';
-      const pageId = (req.headers['x-page-id'] as string) || req.body.pageId || 'default_page';
-      const videoId = (req.headers['x-video-id'] as string) || req.body.videoId || `vid_${Date.now()}`;
-
-      if (!videoFile) {
-        return res.status(400).json({ error: 'Nenhum arquivo de vídeo recebido' });
-      }
-
-      let duration = parseFloat(req.body.duration || '0');
-      let width = parseInt(req.body.width || '1080', 10);
-      let height = parseInt(req.body.height || '1920', 10);
-
-      if (!duration || duration === 0) {
-        const meta = await StorageService.extractMetadata(videoFile.path);
-        duration = meta.duration;
-        width = meta.width;
-        height = meta.height;
-      }
-
-      let thumbnailUrl = '';
-      const thumbnailPath = `users/${userId}/pages/${pageId}/thumbnails/${videoId}.jpg`;
-
-      if (thumbFile) {
-        thumbnailUrl = `/uploads/users/${userId}/pages/${pageId}/thumbnails/${videoId}.jpg`;
-      } else if (videoFile.size > 1024) {
-        const generatedThumbDir = path.join(UPLOADS_DIR, 'users', userId, 'pages', pageId, 'thumbnails');
-        if (!fs.existsSync(generatedThumbDir)) {
-          fs.mkdirSync(generatedThumbDir, { recursive: true });
+  const storageUploadHandler = [
+    (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      upload.fields([
+        { name: 'video', maxCount: 1 },
+        { name: 'thumbnail', maxCount: 1 }
+      ])(req, res, (err) => {
+        if (err) {
+          console.error('[STORAGE UPLOAD MULTER ERROR]:', err);
+          return res.status(400).json({ error: err.message || 'Erro ao processar arquivo de upload' });
         }
-        const fullThumbFile = path.join(generatedThumbDir, `${videoId}.jpg`);
-        try {
-          const cmd = `ffmpeg -y -ss 00:00:01 -i "${videoFile.path}" -vframes 1 -q:v 2 "${fullThumbFile}"`;
-          await execAsync(cmd);
-          if (fs.existsSync(fullThumbFile) && fs.statSync(fullThumbFile).size > 0) {
-            thumbnailUrl = `/uploads/users/${userId}/pages/${pageId}/thumbnails/${videoId}.jpg`;
-          }
-        } catch {
-          // Graceful fallback without breaking upload
-        }
-      }
-
-      const storagePath = `users/${userId}/pages/${pageId}/originals/${videoFile.filename}`;
-      const downloadUrl = `/uploads/${storagePath}`;
-
-      res.json({
-        success: true,
-        videoId,
-        storagePath,
-        downloadUrl,
-        publicUrl: downloadUrl,
-        thumbnailPath: thumbnailUrl ? thumbnailPath : null,
-        thumbnailUrl: thumbnailUrl || '',
-        originalFilename: videoFile.originalname,
-        duration,
-        width,
-        height,
-        fileSize: videoFile.size,
-        mimeType: videoFile.mimetype || 'video/mp4'
+        next();
       });
-    } catch (err: any) {
-      console.error('Storage upload route error:', err);
-      res.status(500).json({ error: err?.message || 'Falha no processamento do upload' });
+    },
+    async (req: express.Request, res: express.Response) => {
+      try {
+        const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+        const videoFile = files?.['video']?.[0];
+        const thumbFile = files?.['thumbnail']?.[0];
+        const userId = (req.headers['x-user-id'] as string) || req.body.userId || 'default_user';
+        const pageId = (req.headers['x-page-id'] as string) || req.body.pageId || 'default_page';
+        const videoId = (req.headers['x-video-id'] as string) || req.body.videoId || `vid_${Date.now()}`;
+
+        if (!videoFile) {
+          return res.status(400).json({ error: 'Nenhum arquivo de vídeo recebido' });
+        }
+
+        let duration = parseFloat(req.body.duration || '0');
+        let width = parseInt(req.body.width || '1080', 10);
+        let height = parseInt(req.body.height || '1920', 10);
+
+        if (!duration || duration === 0) {
+          const meta = await StorageService.extractMetadata(videoFile.path);
+          duration = meta.duration;
+          width = meta.width;
+          height = meta.height;
+        }
+
+        let thumbnailUrl = '';
+        const thumbnailPath = `users/${userId}/pages/${pageId}/thumbnails/${videoId}.jpg`;
+
+        if (thumbFile) {
+          thumbnailUrl = `/uploads/users/${userId}/pages/${pageId}/thumbnails/${videoId}.jpg`;
+        } else if (videoFile.size > 1024) {
+          const generatedThumbDir = path.join(UPLOADS_DIR, 'users', userId, 'pages', pageId, 'thumbnails');
+          if (!fs.existsSync(generatedThumbDir)) {
+            fs.mkdirSync(generatedThumbDir, { recursive: true });
+          }
+          const fullThumbFile = path.join(generatedThumbDir, `${videoId}.jpg`);
+          try {
+            const cmd = `ffmpeg -y -ss 00:00:01 -i "${videoFile.path}" -vframes 1 -q:v 2 "${fullThumbFile}"`;
+            await execAsync(cmd);
+            if (fs.existsSync(fullThumbFile) && fs.statSync(fullThumbFile).size > 0) {
+              thumbnailUrl = `/uploads/users/${userId}/pages/${pageId}/thumbnails/${videoId}.jpg`;
+            }
+          } catch {
+            // Graceful fallback without breaking upload
+          }
+        }
+
+        const storagePath = `users/${userId}/pages/${pageId}/originals/${videoFile.filename}`;
+        const downloadUrl = `/uploads/${storagePath}`;
+
+        res.json({
+          success: true,
+          videoId,
+          storagePath,
+          downloadUrl,
+          publicUrl: downloadUrl,
+          thumbnailPath: thumbnailUrl ? thumbnailPath : null,
+          thumbnailUrl: thumbnailUrl || '',
+          originalFilename: videoFile.originalname,
+          duration,
+          width,
+          height,
+          fileSize: videoFile.size,
+          mimeType: videoFile.mimetype || 'video/mp4'
+        });
+      } catch (err: any) {
+        console.error('Storage upload route error:', err);
+        res.status(500).json({ error: err?.message || 'Falha no processamento do upload' });
+      }
     }
-  });
+  ];
+
+  app.post('/api/storage/upload', ...storageUploadHandler);
+  app.post('/api/upload', ...storageUploadHandler);
 
   // Seed sample demo videos for quick testing (e.g. 10 or 100 videos)
   app.post('/api/videos/generate-demo-batch', async (req, res) => {
@@ -480,25 +498,75 @@ async function startServer() {
   // Create Batch Production & start queue
   app.post('/api/productions', async (req, res) => {
     try {
-      const { pageId, templateId, videoIds, title } = req.body;
+      const { 
+        productionId, 
+        userId = 'usr_darkflow_demo', 
+        pageId, 
+        templateId, 
+        templateSnapshot, 
+        videoIds, 
+        videos: providedVideos = [], 
+        title, 
+        name,
+        audioMode = 'ORIGINAL' 
+      } = req.body;
+
       if (!templateId || !Array.isArray(videoIds) || videoIds.length === 0) {
         return res.status(400).json({ error: 'Selecione pelo menos um vídeo e um template' });
       }
 
-      const template = db.getTemplate(templateId);
-      if (!template) return res.status(404).json({ error: 'Template não encontrado' });
+      let template = db.getTemplate(templateId);
+      if (!template && req.body.template) {
+        template = req.body.template;
+      }
 
-      const prodId = `prod_${Date.now()}`;
-      const prodTitle = title || `Produção #${String(db.getProductions('usr_darkflow_demo').length + 1).padStart(3, '0')}`;
+      const prodId = productionId || `prod_${Date.now()}`;
+      const prodTitle = title || name || `Produção #${String(db.getProductions(userId).length + 1).padStart(3, '0')}`;
+
+      // Snapshot template elements if not provided
+      const finalSnapshot = templateSnapshot || (template ? {
+        width: template.width || 1080,
+        height: template.height || 1920,
+        background: template.background || '#090a0f',
+        elements: template.elements || []
+      } : undefined);
 
       const items: ProductionItem[] = [];
 
       for (const vidId of videoIds) {
-        const vid = db.getVideo(vidId);
+        let vid = db.getVideo(vidId);
+        if (!vid) {
+          vid = providedVideos.find((v: any) => v.id === vidId);
+        }
+        if (!vid) {
+          // Emergency mock/stub so the job can still be processed if video was uploaded client-side
+          vid = {
+            id: vidId,
+            userId,
+            pageId: pageId || 'page_memorias',
+            name: `Vídeo ${vidId.slice(-6)}`,
+            storagePath: '',
+            platform: 'generic',
+            source: 'upload',
+            tags: [],
+            originalUrl: `/uploads/videos/${vidId}.mp4`,
+            thumbnailUrl: '',
+            duration: 10,
+            width: 1080,
+            height: 1920,
+            status: 'READY' as any,
+            format: 'mp4',
+            sizeBytes: 1024 * 1024,
+            createdAt: new Date().toISOString()
+          };
+        }
+
         if (vid) {
           items.push({
             id: `item_${Date.now()}_${Math.round(Math.random() * 1e5)}`,
             productionId: prodId,
+            userId,
+            pageId: pageId || template?.pageId || 'page_memorias',
             videoId: vid.id,
             videoName: vid.name,
             originalVideoUrl: vid.originalUrl,
@@ -514,18 +582,29 @@ async function startServer() {
 
       const newProd: Production = {
         id: prodId,
-        userId: 'usr_darkflow_demo',
-        pageId: pageId || template.pageId || 'page_memorias',
+        userId,
+        pageId: pageId || template?.pageId || 'page_memorias',
         templateId,
-        templateName: template.name,
+        templateName: template?.name || 'Template DARKFLOW',
+        templateSnapshot: finalSnapshot,
         title: prodTitle,
+        name: prodTitle,
+        audioMode,
         total: items.length,
         completed: 0,
         processing: 0,
         queued: items.length,
         failed: 0,
+        cancelled: 0,
+        totalJobs: items.length,
+        completedJobs: 0,
+        processingJobs: 0,
+        queuedJobs: items.length,
+        failedJobs: 0,
+        cancelledJobs: 0,
         status: 'queued',
         progress: 0,
+        startedAt: new Date().toISOString(),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
@@ -550,6 +629,21 @@ async function startServer() {
   app.post('/api/productions/:id/retry', async (req, res) => {
     await queueService.retryFailed(req.params.id);
     res.json({ success: true, message: 'Itens com falha reinseridos na fila' });
+  });
+
+  app.post('/api/productions/:id/jobs/:jobId/retry', async (req, res) => {
+    await queueService.retrySingleJob(req.params.id, req.params.jobId);
+    res.json({ success: true, message: `Job ${req.params.jobId} reinserido na fila` });
+  });
+
+  // Direct ZIP download of completed videos
+  app.get('/api/productions/:id/zip', async (req, res) => {
+    try {
+      const batch = await ZipService.generateProductionZip(req.params.id);
+      res.json(batch);
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || 'Erro ao gerar arquivo ZIP' });
+    }
   });
 
   // Exports & ZIP
@@ -595,10 +689,114 @@ async function startServer() {
     res.status(201).json(tag);
   });
 
-  // Minerador & URL Importer
+  // ==========================================
+  // MINER, FONTES & IMPORT QUEUE (PROMPT 4)
+  // ==========================================
+
+  // List all available content sources & their statuses
+  app.get('/api/miner/sources', (req, res) => {
+    const sources = ContentSourceService.getSourcesInfo();
+    res.json(sources);
+  });
+
+  // Test connection to a specific source
+  app.post('/api/miner/sources/:id/test', async (req, res) => {
+    const result = await ContentSourceService.testSource(req.params.id);
+    res.json(result);
+  });
+
+  // Search across source(s)
+  app.post('/api/miner/search', async (req, res) => {
+    try {
+      const result = await ContentSourceService.search(req.body);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Erro ao consultar fonte' });
+    }
+  });
+
+  // Verify direct media URL
+  app.post('/api/miner/verify-url', async (req, res) => {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'URL é obrigatória' });
+    const result = await ContentSourceService.verifyAnyUrl(url);
+    res.json(result);
+  });
+
+  // Check duplicate in library
+  app.post('/api/miner/check-duplicate', (req, res) => {
+    const { userId, pageId, source, sourceContentId } = req.body;
+    const targetUserId = userId || 'usr_darkflow_demo';
+    const targetPageId = pageId || 'page_memorias';
+    const existing = db.findExistingVideoBySource(targetUserId, targetPageId, source, sourceContentId);
+    res.json({
+      isDuplicate: !!existing,
+      video: existing || null
+    });
+  });
+
+  // Create mass import batch
+  app.post('/api/miner/batches', async (req, res) => {
+    try {
+      const { userId, pageId, source, items, tags, authorizationConfirmed } = req.body;
+      const targetUserId = userId || 'usr_darkflow_demo';
+      const targetPageId = pageId || 'page_memorias';
+
+      const batch = await importQueueService.createBatch({
+        userId: targetUserId,
+        pageId: targetPageId,
+        source: source || 'direct_url',
+        items: items || [],
+        tags: tags || [],
+        authorizationConfirmed: !!authorizationConfirmed
+      });
+
+      res.status(201).json(batch);
+    } catch (err: any) {
+      console.error('[Create Import Batch Error]:', err);
+      res.status(400).json({ error: err.message || 'Erro ao criar lote de importação' });
+    }
+  });
+
+  // List user import batches (Import history log)
+  app.get('/api/miner/batches', (req, res) => {
+    const { userId, pageId } = req.query;
+    const batches = db.getImportBatches(
+      (userId as string) || 'usr_darkflow_demo',
+      pageId as string
+    );
+    res.json(batches);
+  });
+
+  // Get specific import batch with live items and progress
+  app.get('/api/miner/batches/:id', (req, res) => {
+    const batch = db.getImportBatch(req.params.id);
+    if (!batch) return res.status(404).json({ error: 'Lote de importação não encontrado' });
+    res.json(batch);
+  });
+
+  // Cancel import batch
+  app.post('/api/miner/batches/:id/cancel', (req, res) => {
+    importQueueService.cancelBatch(req.params.id);
+    res.json({ success: true, message: 'Importação cancelada com sucesso' });
+  });
+
+  // Retry failed items in batch
+  app.post('/api/miner/batches/:id/retry', async (req, res) => {
+    await importQueueService.retryFailed(req.params.id);
+    res.json({ success: true, message: 'Itens com falha reinseridos na fila de importação' });
+  });
+
+  // Retry single job
+  app.post('/api/miner/batches/:id/jobs/:jobId/retry', async (req, res) => {
+    await importQueueService.retryJob(req.params.id, req.params.jobId);
+    res.json({ success: true, message: 'Job reinserido na fila' });
+  });
+
+  // Minerador & URL Importer (Backward compatibility)
   app.post('/api/minerador/search', async (req, res) => {
-    const { platform, queryValue } = req.body;
-    const adapter = AdapterManager.getAdapter(platform);
+    const { platform } = req.body;
+    const adapter = ContentSourceService.getAdapter(platform);
 
     if (!adapter) {
       return res.status(400).json({ error: 'Plataforma não suportada' });
@@ -611,35 +809,48 @@ async function startServer() {
   app.post('/api/minerador/verify-url', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'URL é obrigatória' });
-    const result = await AdapterManager.verifyAnyUrl(url);
+    const result = await ContentSourceService.verifyAnyUrl(url);
     res.json(result);
   });
 
   app.post('/api/minerador/import-url', async (req, res) => {
-    const { url, pageId, name } = req.body;
-    const verification = await AdapterManager.verifyAnyUrl(url);
+    const { url, pageId, name, tags } = req.body;
+    const verification = await ContentSourceService.verifyAnyUrl(url);
 
     if (!verification.valid) {
       return res.status(400).json({ error: verification.message || 'URL incompatível' });
     }
 
     const targetPageId = pageId || 'page_memorias';
+    const targetUserId = 'usr_darkflow_demo';
+
+    // Check duplicate
+    const existing = db.findExistingVideoBySource(targetUserId, targetPageId, 'importador_url', url);
+    if (existing) {
+      return res.json(existing);
+    }
+
     const videoRecord: Video = {
       id: `vid_${Date.now()}`,
-      userId: 'usr_darkflow_demo',
+      userId: targetUserId,
       pageId: targetPageId,
       name: name || verification.title || 'Vídeo Importado',
       originalUrl: url,
       storagePath: url,
+      downloadUrl: url,
       thumbnailUrl: verification.thumbnailUrl || 'https://images.unsplash.com/photo-1536240478700-b869070f9279?w=600&auto=format&fit=crop&q=80',
       duration: verification.duration || 15,
       width: 1080,
       height: 1920,
       platform: verification.platform,
       source: 'importador_url',
+      sourceContentId: url,
+      sourceUrl: url,
       status: 'original',
-      tags: ['URL', 'IMPORTADO'],
-      sizeBytes: 15 * 1024 * 1024,
+      tags: tags || ['URL', 'IMPORTADO'],
+      sizeBytes: verification.fileSize || 15 * 1024 * 1024,
+      importedAt: new Date().toISOString(),
+      authorizationConfirmed: true,
       createdAt: new Date().toISOString()
     };
 
@@ -647,7 +858,7 @@ async function startServer() {
 
     db.addNotification({
       id: `notif_${Date.now()}`,
-      userId: 'usr_darkflow_demo',
+      userId: targetUserId,
       title: 'Importação por URL bem-sucedida',
       message: `"${videoRecord.name}" adicionado à sua biblioteca.`,
       type: 'success',
@@ -656,6 +867,11 @@ async function startServer() {
     });
 
     res.status(201).json(videoRecord);
+  });
+
+  // Explicit JSON 404 handler for unhandled /api routes to prevent HTML fallbacks
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ error: `Rota de API não encontrada: ${req.method} ${req.path}` });
   });
 
   // Ensure all API errors return JSON rather than falling through to SPA HTML

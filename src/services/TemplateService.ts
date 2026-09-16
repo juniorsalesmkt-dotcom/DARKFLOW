@@ -72,7 +72,11 @@ export class TemplateService {
           height: arg2.height || 1920,
           aspectRatio: arg2.aspectRatio || '9:16',
           background: arg2.background || '#090a0f',
-          thumbnailUrl: arg2.thumbnailUrl || '',
+          backgroundImageUrl: arg2.backgroundImageUrl || '',
+          backgroundImagePath: arg2.backgroundImagePath || '',
+          isOverlayFrame: !!arg2.isOverlayFrame,
+          videoArea: arg2.videoArea,
+          thumbnailUrl: arg2.thumbnailUrl || arg2.backgroundImageUrl || '',
           elements: arg2.elements || [],
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
@@ -86,6 +90,16 @@ export class TemplateService {
         createdAt: template.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString()
       });
+
+      // Sync with backend API
+      try {
+        await fetch('/api/templates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(template)
+        });
+      } catch {}
+
       return template;
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, this.collectionName);
@@ -120,6 +134,15 @@ export class TemplateService {
         ...data,
         updatedAt: new Date().toISOString()
       });
+
+      // Sync with backend API
+      try {
+        await fetch('/api/templates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: templateId, ...data })
+        });
+      } catch {}
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `${this.collectionName}/${templateId}`);
     }

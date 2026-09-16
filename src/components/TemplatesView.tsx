@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
   LayoutTemplate, 
   Plus, 
@@ -11,7 +11,8 @@ import {
   Clock, 
   MoreVertical,
   ExternalLink,
-  Layers
+  Layers,
+  Image as ImageIcon
 } from 'lucide-react';
 import { Template, Page } from '../types/index.js';
 
@@ -21,6 +22,7 @@ interface TemplatesViewProps {
   selectedPageId: string;
   onOpenEditor: (template: Template) => void;
   onCreateNewTemplate: () => void;
+  onCreateTemplateFromImage?: (file: File) => Promise<void>;
   onDuplicateTemplate: (id: string) => Promise<void>;
   onDeleteTemplate: (id: string) => Promise<void>;
   onUseTemplateInProduction: (templateId: string) => void;
@@ -32,12 +34,15 @@ export const TemplatesView: React.FC<TemplatesViewProps> = ({
   selectedPageId,
   onOpenEditor,
   onCreateNewTemplate,
+  onCreateTemplateFromImage,
   onDuplicateTemplate,
   onDeleteTemplate,
   onUseTemplateInProduction
 }) => {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
+  const imageFileInputRef = useRef<HTMLInputElement>(null);
 
   const filteredTemplates = templates.filter(t => {
     if (selectedPageId && t.pageId !== selectedPageId) return false;
@@ -57,25 +62,57 @@ export const TemplatesView: React.FC<TemplatesViewProps> = ({
         <div>
           <h1 className="text-2xl font-extrabold text-white tracking-tight">Meus Templates Visuais</h1>
           <p className="text-sm text-slate-400 mt-0.5">
-            Modelos de enquadramento com área dinâmica (placeholder), tipografia personalizada e identidade de marca.
+            Crie templates a partir de imagens personalizadas ou modelos em branco e defina a área do vídeo para renderização automática.
           </p>
         </div>
 
-        <button
-          id="btn-new-template"
-          onClick={onCreateNewTemplate}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-linear-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-xs font-bold text-white shadow-lg shadow-purple-900/30 transition-all cursor-pointer self-start sm:self-auto"
-        >
-          <Plus className="w-4 h-4" />
-          <span>+ NOVO TEMPLATE</span>
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            type="file"
+            ref={imageFileInputRef}
+            accept="image/*"
+            className="hidden"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file || !onCreateTemplateFromImage) return;
+              setIsUploading(true);
+              try {
+                await onCreateTemplateFromImage(file);
+              } catch (err: any) {
+                alert(`Erro ao criar template: ${err?.message || 'Falha no envio'}`);
+              } finally {
+                setIsUploading(false);
+                if (imageFileInputRef.current) imageFileInputRef.current.value = '';
+              }
+            }}
+          />
+
+          <button
+            id="btn-new-template-image"
+            onClick={() => imageFileInputRef.current?.click()}
+            disabled={isUploading}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-linear-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-xs font-bold text-white shadow-lg shadow-emerald-900/30 transition-all cursor-pointer self-start sm:self-auto disabled:opacity-50"
+          >
+            <ImageIcon className="w-4 h-4" />
+            <span>{isUploading ? 'Enviando Imagem...' : '+ CRIAR A PARTIR DE IMAGEM'}</span>
+          </button>
+
+          <button
+            id="btn-new-template"
+            onClick={onCreateNewTemplate}
+            className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-[#1a1f33] hover:bg-[#232a45] border border-[#2d3654] text-xs font-semibold text-slate-300 hover:text-white transition-all cursor-pointer self-start sm:self-auto"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Template em Branco</span>
+          </button>
+        </div>
       </div>
 
       {/* Templates Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
         {filteredTemplates.map(tpl => {
           const page = pages.find(p => p.id === tpl.pageId);
-          const hasVideoPlaceholder = tpl.elements.some(e => e.type === 'video_placeholder');
+          const hasVideoPlaceholder = tpl.elements.some(e => e.type === 'video_placeholder') || !!tpl.videoArea;
 
           return (
             <div
@@ -93,6 +130,33 @@ export const TemplatesView: React.FC<TemplatesViewProps> = ({
                     style={{ background: tpl.background }}
                     className="w-full h-full relative"
                   >
+                    {/* Background image preview if template has backgroundImageUrl */}
+                    {tpl.backgroundImageUrl && (
+                      <img 
+                        src={tpl.backgroundImageUrl} 
+                        alt="" 
+                        className="absolute inset-0 w-full h-full object-cover" 
+                      />
+                    )}
+
+                    {/* Direct videoArea if elements don't have video_placeholder */}
+                    {!tpl.elements.some(e => e.type === 'video_placeholder') && tpl.videoArea && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          left: `${(tpl.videoArea.x / tpl.width) * 100}%`,
+                          top: `${(tpl.videoArea.y / tpl.height) * 100}%`,
+                          width: `${(tpl.videoArea.width / tpl.width) * 100}%`,
+                          height: `${(tpl.videoArea.height / tpl.height) * 100}%`,
+                          borderRadius: '4px',
+                          border: '2px dashed #8b5cf6'
+                        }}
+                        className="bg-purple-900/50 flex items-center justify-center overflow-hidden z-10"
+                      >
+                        <Film className="w-5 h-5 text-purple-300 opacity-80" />
+                      </div>
+                    )}
+
                     {tpl.elements.map(el => {
                       if (el.hidden) return null;
                       const scale = 0.25; // thumbnail scale

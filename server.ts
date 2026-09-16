@@ -7,7 +7,7 @@ import { createServer as createViteServer } from 'vite';
 
 const execAsync = util.promisify(exec);
 import { db } from './server/db.js';
-import { upload, StorageService, UPLOADS_DIR } from './server/services/storage.js';
+import { upload, uploadImage, StorageService, UPLOADS_DIR } from './server/services/storage.js';
 import { queueService } from './server/services/queue.js';
 import { ZipService } from './server/services/zip.js';
 import { AdapterManager, ContentSourceService } from './server/services/adapters.js';
@@ -434,10 +434,28 @@ async function startServer() {
     res.json(tpl);
   });
 
+  app.post('/api/templates/upload-image', uploadImage.single('image'), (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nenhuma imagem enviada' });
+    }
+    const userId = (req.headers['x-user-id'] as string) || req.body?.userId || 'usr_darkflow_demo';
+    const pageId = (req.headers['x-page-id'] as string) || req.body?.pageId || 'page_memorias';
+    const filename = req.file.filename;
+    const relativePath = `users/${userId}/pages/${pageId}/templates/${filename}`;
+    const publicUrl = `/uploads/${relativePath}`;
+
+    res.json({
+      success: true,
+      imageUrl: publicUrl,
+      imagePath: req.file.path,
+      filename: req.file.filename
+    });
+  });
+
   app.post('/api/templates', (req, res) => {
     const template: Template = {
-      id: `tpl_${Date.now()}`,
-      userId: 'usr_darkflow_demo',
+      id: req.body.id || `tpl_${Date.now()}`,
+      userId: req.body.userId || 'usr_darkflow_demo',
       pageId: req.body.pageId || 'page_memorias',
       name: req.body.name || 'Novo Template',
       description: req.body.description || '',
@@ -445,7 +463,18 @@ async function startServer() {
       height: req.body.height || 1920,
       aspectRatio: req.body.aspectRatio || '9:16',
       background: req.body.background || '#090a0f',
-      thumbnailUrl: req.body.thumbnailUrl || '/assets/templates/dark_demo_thumb.svg',
+      backgroundImageUrl: req.body.backgroundImageUrl || '',
+      backgroundImagePath: req.body.backgroundImagePath || '',
+      isOverlayFrame: !!req.body.isOverlayFrame,
+      videoArea: req.body.videoArea || {
+        x: Math.round((req.body.width || 1080) * 0.05),
+        y: Math.round((req.body.height || 1920) * 0.15),
+        width: Math.round((req.body.width || 1080) * 0.9),
+        height: Math.round((req.body.height || 1920) * 0.7),
+        borderRadius: 16,
+        fit: 'cover'
+      },
+      thumbnailUrl: req.body.thumbnailUrl || req.body.backgroundImageUrl || '/assets/templates/dark_demo_thumb.svg',
       elements: req.body.elements || [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -515,19 +544,36 @@ async function startServer() {
         return res.status(400).json({ error: 'Selecione pelo menos um vídeo e um template' });
       }
 
+      // Sync provided videos to in-memory DB if passed
+      if (Array.isArray(providedVideos) && providedVideos.length > 0) {
+        for (const pv of providedVideos) {
+          if (!db.getVideo(pv.id)) {
+            db.createVideo(pv);
+          }
+        }
+      }
+
       let template = db.getTemplate(templateId);
       if (!template && req.body.template) {
         template = req.body.template;
+        db.createTemplate(template);
       }
 
       const prodId = productionId || `prod_${Date.now()}`;
       const prodTitle = title || name || `Produção #${String(db.getProductions(userId).length + 1).padStart(3, '0')}`;
+
+      // [PRODUCTION 03] Início da produção
+      console.log(`[PRODUCTION 03] Início da produção: productionId=${prodId}, templateId=${templateId}, totalVideos=${videoIds.length}, audioMode=${audioMode}`);
 
       // Snapshot template elements if not provided
       const finalSnapshot = templateSnapshot || (template ? {
         width: template.width || 1080,
         height: template.height || 1920,
         background: template.background || '#090a0f',
+        backgroundImageUrl: template.backgroundImageUrl,
+        backgroundImagePath: template.backgroundImagePath,
+        isOverlayFrame: template.isOverlayFrame,
+        videoArea: template.videoArea,
         elements: template.elements || []
       } : undefined);
 
@@ -537,9 +583,11 @@ async function startServer() {
         let vid = db.getVideo(vidId);
         if (!vid) {
           vid = providedVideos.find((v: any) => v.id === vidId);
+          if (vid && !db.getVideo(vid.id)) {
+            db.createVideo(vid);
+          }
         }
         if (!vid) {
-          // Emergency mock/stub so the job can still be processed if video was uploaded client-side
           vid = {
             id: vidId,
             userId,
@@ -559,10 +607,11 @@ async function startServer() {
             sizeBytes: 1024 * 1024,
             createdAt: new Date().toISOString()
           };
+          db.createVideo(vid);
         }
 
         if (vid) {
-          items.push({
+          const newItem: ProductionItem = {
             id: `item_${Date.now()}_${Math.round(Math.random() * 1e5)}`,
             productionId: prodId,
             userId,
@@ -576,7 +625,12 @@ async function startServer() {
             progress: 0,
             duration: vid.duration,
             createdAt: new Date().toISOString()
-          });
+          };
+
+          // [PRODUCTION 04] Criação do job na fila
+          console.log(`[PRODUCTION 04] Criação do job na fila: productionId=${prodId}, itemId=${newItem.id}, videoId=${vid.id}, videoName="${vid.name}"`);
+
+          items.push(newItem);
         }
       }
 

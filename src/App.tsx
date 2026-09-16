@@ -329,6 +329,64 @@ export default function App() {
     setEditingTemplate(newTpl);
   };
 
+  const handleCreateTemplateFromImage = async (file: File) => {
+    if (!firebaseUser?.uid) return;
+    const formData = new FormData();
+    formData.append('image', file);
+
+    const uploadRes = await fetch('/api/templates/upload-image', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!uploadRes.ok) {
+      throw new Error('Falha no upload da imagem do template');
+    }
+
+    const { imageUrl, imagePath } = await uploadRes.json();
+    const cleanName = file.name.replace(/\.[^/.]+$/, "") || `Template #${templates.length + 1}`;
+
+    const newTpl = await TemplateService.createTemplate(firebaseUser.uid, {
+      name: cleanName,
+      pageId: selectedPageId || pages[0]?.id || '',
+      aspectRatio: '9:16',
+      width: 1080,
+      height: 1920,
+      background: '#090a0f',
+      backgroundImageUrl: imageUrl,
+      backgroundImagePath: imagePath,
+      thumbnailUrl: imageUrl,
+      videoArea: {
+        x: 60,
+        y: 360,
+        width: 960,
+        height: 1200,
+        borderRadius: 24,
+        fit: 'cover'
+      },
+      elements: [
+        {
+          id: `el_v_${Date.now()}`,
+          name: 'Área do Vídeo (Placeholder)',
+          type: 'video_placeholder',
+          x: 60,
+          y: 360,
+          width: 960,
+          height: 1200,
+          zIndex: 5,
+          opacity: 1,
+          fit: 'cover',
+          borderRadius: 24,
+          borderColor: '#8b5cf6',
+          borderWidth: 2
+        }
+      ]
+    });
+
+    setTemplates(prev => [newTpl, ...prev]);
+    setEditingTemplate(newTpl);
+  };
+
   const handleDuplicateTemplate = async (id: string) => {
     const duplicated = await TemplateService.duplicateTemplate(id);
     setTemplates(prev => [duplicated, ...prev]);
@@ -581,6 +639,7 @@ export default function App() {
               selectedPageId={selectedPageId}
               onOpenEditor={setEditingTemplate}
               onCreateNewTemplate={handleCreateNewTemplate}
+              onCreateTemplateFromImage={handleCreateTemplateFromImage}
               onDuplicateTemplate={handleDuplicateTemplate}
               onDeleteTemplate={handleDeleteTemplate}
               onUseTemplateInProduction={handleUseTemplateInProduction}

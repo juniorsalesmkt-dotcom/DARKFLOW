@@ -122,6 +122,17 @@ export interface Template {
   height: number;
   aspectRatio: AspectRatioPreset;
   background: string;
+  backgroundImageUrl?: string;
+  backgroundImagePath?: string;
+  isOverlayFrame?: boolean;
+  videoArea?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    borderRadius?: number;
+    fit?: 'cover' | 'contain' | 'fill';
+  };
   thumbnailUrl?: string;
   elements: TemplateElement[];
   tags?: string[];
@@ -180,6 +191,17 @@ export interface TemplateSnapshot {
   width: number;
   height: number;
   background: string;
+  backgroundImageUrl?: string;
+  backgroundImagePath?: string;
+  isOverlayFrame?: boolean;
+  videoArea?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    borderRadius?: number;
+    fit?: 'cover' | 'contain' | 'fill';
+  };
   elements: TemplateElement[];
 }
 

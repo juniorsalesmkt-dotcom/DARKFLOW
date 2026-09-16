@@ -137,36 +137,53 @@ export const ProductionView: React.FC<ProductionViewProps> = ({
     return true;
   });
 
-  // Template validation: must have at least one video_placeholder
+  // Template validation: supports both element-based placeholders AND direct image template videoArea
   const selectedTemplate = templates.find(t => t.id === wizardTemplateId) || availableTemplates[0];
   const templatePlaceholders = selectedTemplate?.elements?.filter(
     el => el.type === 'video_placeholder' || (el as any).type === 'VIDEO_PLACEHOLDER'
   ) || [];
-  const hasVideoPlaceholder = templatePlaceholders.length > 0;
+  const hasVideoPlaceholder = templatePlaceholders.length > 0 || !!selectedTemplate?.videoArea || !!selectedTemplate?.backgroundImageUrl;
 
   const handleToggleSelectVideo = (id: string) => {
     const next = new Set(wizardSelectedVideoIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
+    if (next.has(id)) {
+      next.delete(id);
+      console.log(`[PRODUCTION 01] Deseleção de vídeo: ${id} (Restantes selecionados: ${next.size})`);
+    } else {
+      next.add(id);
+      console.log(`[PRODUCTION 01] Seleção de vídeo: ${id} (Total selecionados: ${next.size})`);
+    }
     setWizardSelectedVideoIds(next);
   };
 
   const handleSelectAllVideos = () => {
     if (wizardSelectedVideoIds.size === availableVideos.length && availableVideos.length > 0) {
       setWizardSelectedVideoIds(new Set());
+      console.log('[PRODUCTION 01] Desmarcar todos os vídeos');
     } else {
-      setWizardSelectedVideoIds(new Set(availableVideos.map(v => v.id)));
+      const allIds = new Set(availableVideos.map(v => v.id));
+      setWizardSelectedVideoIds(allIds);
+      console.log(`[PRODUCTION 01] Seleção em massa de vídeos: ${allIds.size} selecionados`);
     }
+  };
+
+  const handleSelectTemplate = (tplId: string) => {
+    const tpl = templates.find(t => t.id === tplId);
+    console.log(`[PRODUCTION 02] Seleção de template: ${tplId} ("${tpl?.name || ''}")`);
+    setWizardTemplateId(tplId);
   };
 
   const handleLaunchProduction = async () => {
     if (!wizardTemplateId || wizardSelectedVideoIds.size === 0 || !hasVideoPlaceholder) return;
     setIsSubmitting(true);
+    const videoIdsList = Array.from(wizardSelectedVideoIds);
+    console.log(`[PRODUCTION 03] Início da produção: template=${wizardTemplateId}, totalVideos=${videoIdsList.length}, audioMode=${wizardAudioMode}`);
+
     try {
       await onCreateProduction({
         pageId: wizardPageId,
         templateId: wizardTemplateId,
-        videoIds: Array.from(wizardSelectedVideoIds),
+        videoIds: videoIdsList,
         title: wizardTitle.trim() || undefined,
         audioMode: wizardAudioMode
       });
@@ -609,12 +626,12 @@ export const ProductionView: React.FC<ProductionViewProps> = ({
                         const isSel = wizardTemplateId === t.id;
                         const hasPlaceholder = t.elements.some(
                           el => el.type === 'video_placeholder' || (el as any).type === 'VIDEO_PLACEHOLDER'
-                        );
+                        ) || !!t.videoArea || !!t.backgroundImageUrl;
 
                         return (
                           <div
                             key={t.id}
-                            onClick={() => setWizardTemplateId(t.id)}
+                            onClick={() => handleSelectTemplate(t.id)}
                             className={`
                               p-3 rounded-xl border cursor-pointer transition-all flex flex-col justify-between
                               ${isSel ? 'bg-purple-600/20 border-purple-500 ring-1 ring-purple-500' : 'bg-[#151928] border-[#22283d] hover:bg-[#1a1f33]'}

@@ -167,6 +167,8 @@ class QueueService implements IQueueService {
             ? 'failed' 
             : 'completed';
 
+        console.log(`[PRODUCTION 14] Atualização do status para ${finalStatus.toUpperCase()}: productionId=${productionId}, completed=${finalProd.completed}/${finalProd.total}, failed=${finalProd.failed}`);
+
         db.updateProduction(productionId, {
           status: finalStatus as any,
           completedAt
@@ -211,29 +213,82 @@ class QueueService implements IQueueService {
         throw new Error(`Template [${prod.templateId}] não encontrado`);
       }
 
-      // Resolve original file on disk
+      // [PRODUCTION 05] Localizar/baixar vídeo original
       let originalFilePath = '';
+
+      // Check 1: direct storagePath if absolute or relative
       if (video.storagePath) {
-        originalFilePath = path.join(UPLOADS_DIR, video.storagePath);
-      }
-      if (!originalFilePath || !fs.existsSync(originalFilePath)) {
-        if (video.originalUrl && video.originalUrl.startsWith('/uploads/')) {
-          originalFilePath = path.join(UPLOADS_DIR, video.originalUrl.replace(/^\/uploads\//, ''));
+        if (path.isAbsolute(video.storagePath) && fs.existsSync(video.storagePath)) {
+          originalFilePath = video.storagePath;
+        } else if (fs.existsSync(path.join(process.cwd(), video.storagePath))) {
+          originalFilePath = path.join(process.cwd(), video.storagePath);
+        } else if (fs.existsSync(path.join(UPLOADS_DIR, video.storagePath.replace(/^uploads[\/\\]/, '')))) {
+          originalFilePath = path.join(UPLOADS_DIR, video.storagePath.replace(/^uploads[\/\\]/, ''));
         }
       }
 
-      // Check if file physically exists
+      // Check 2: originalUrl if pointing to local /uploads/
       if (!originalFilePath || !fs.existsSync(originalFilePath)) {
-        // Create an emergency sample video clip if testing without user uploads
-        originalFilePath = path.join(UPLOADS_DIR, `temp_src_${item.videoId}.mp4`);
-        if (!fs.existsSync(originalFilePath)) {
-          const { execSync } = await import('child_process');
-          try {
-            execSync(`ffmpeg -y -f lavfi -i testsrc=duration=5:size=720x1280:rate=30 -f lavfi -i sine=frequency=1000:duration=5 -c:v libx264 -c:a aac "${originalFilePath}"`);
-          } catch (e: any) {
-            throw new Error(`Arquivo fonte original não encontrado e não pôde ser gerado: ${e?.message}`);
+        if (video.originalUrl && video.originalUrl.startsWith('/uploads/')) {
+          const checkPath = path.join(UPLOADS_DIR, video.originalUrl.replace(/^\/uploads[\/\\]/, ''));
+          if (fs.existsSync(checkPath)) {
+            originalFilePath = checkPath;
           }
         }
+      }
+
+      // Check 3: check if remote URL (e.g. from Miner or Cloud Storage)
+      const remoteUrl = (video.originalUrl && video.originalUrl.startsWith('http')) 
+        ? video.originalUrl 
+        : (video.downloadUrl && video.downloadUrl.startsWith('http')) 
+          ? video.downloadUrl 
+          : '';
+
+      if ((!originalFilePath || !fs.existsSync(originalFilePath)) && remoteUrl) {
+        const tempDir = path.join(UPLOADS_DIR, 'temp');
+        if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+        const tempRemoteFile = path.join(tempDir, `remote_${item.videoId}.mp4`);
+        console.log(`[PRODUCTION 05] Baixando vídeo remoto para renderização: ${remoteUrl}`);
+        try {
+          const fetchRes = await fetch(remoteUrl);
+          if (fetchRes.ok) {
+            const buf = Buffer.from(await fetchRes.arrayBuffer());
+            fs.writeFileSync(tempRemoteFile, buf);
+            originalFilePath = tempRemoteFile;
+          }
+        } catch (fetchErr: any) {
+          console.warn(`[PRODUCTION 05] Erro ao baixar vídeo remoto: ${fetchErr?.message}`);
+        }
+      }
+
+      // Check 4: Check default user upload locations
+      if (!originalFilePath || !fs.existsSync(originalFilePath)) {
+        const candidatePaths = [
+          path.join(UPLOADS_DIR, 'users', prod.userId, 'pages', prod.pageId, 'originals', `${video.id}_${video.name}.mp4`),
+          path.join(UPLOADS_DIR, 'users', 'usr_darkflow_demo', 'pages', prod.pageId, 'originals', `${video.id}.mp4`),
+          path.join(UPLOADS_DIR, 'users', 'default_user', 'pages', 'default_page', 'originals', `${video.id}.mp4`)
+        ];
+        for (const cp of candidatePaths) {
+          if (fs.existsSync(cp)) {
+            originalFilePath = cp;
+            break;
+          }
+        }
+      }
+
+      // If still not found, check if an existing mp4 file exists in uploads matching video id
+      if (!originalFilePath || !fs.existsSync(originalFilePath)) {
+        try {
+          const { execSync } = await import('child_process');
+          const found = execSync(`find "${UPLOADS_DIR}" -type f -name "*${video.id}*" | head -n 1`).toString().trim();
+          if (found && fs.existsSync(found)) {
+            originalFilePath = found;
+          }
+        } catch {}
+      }
+
+      if (!originalFilePath || !fs.existsSync(originalFilePath)) {
+        throw new Error(`[PRODUCTION 05] Arquivo de vídeo original não foi encontrado no disco para o vídeo ID: ${video.id}`);
       }
 
       const renderJob: RenderJob = {
@@ -253,6 +308,10 @@ class QueueService implements IQueueService {
           width: prod.templateSnapshot?.width || 1080,
           height: prod.templateSnapshot?.height || 1920,
           background: prod.templateSnapshot?.background || '#090a0f',
+          backgroundImageUrl: prod.templateSnapshot?.backgroundImageUrl,
+          backgroundImagePath: prod.templateSnapshot?.backgroundImagePath,
+          isOverlayFrame: prod.templateSnapshot?.isOverlayFrame,
+          videoArea: prod.templateSnapshot?.videoArea,
           elements: prod.templateSnapshot?.elements || [],
           tags: [],
           isDefault: false,
@@ -270,6 +329,9 @@ class QueueService implements IQueueService {
       const finishTime = new Date().toISOString();
 
       if (result.success) {
+        // [PRODUCTION 13] Criação do registro no Firestore / DB
+        console.log(`[PRODUCTION 13] Criação do registro no Firestore / DB: itemId=${item.id}, status=completed, url=${result.outputVideoUrl}`);
+
         db.updateProductionItem(item.id, {
           status: 'completed',
           progress: 100,
@@ -284,6 +346,9 @@ class QueueService implements IQueueService {
           error: undefined
         });
 
+        // [PRODUCTION 15] Liberação para download e player
+        console.log(`[PRODUCTION 15] Liberação para download e player: itemId=${item.id}, videoUrl=${result.outputVideoUrl}, thumb=${result.thumbnailUrl}`);
+
         // Update video record in catalog
         db.updateVideo(video.id, { status: 'processed' });
       } else {
@@ -296,6 +361,7 @@ class QueueService implements IQueueService {
         });
       }
     } catch (err: any) {
+      console.error(`[PRODUCTION ERROR] Falha no item ${item.id}:`, err?.message);
       const finishTime = new Date().toISOString();
       db.updateProductionItem(item.id, {
         status: 'failed',

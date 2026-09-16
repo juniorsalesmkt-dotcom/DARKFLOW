@@ -65,7 +65,7 @@ export class FFmpegVideoRenderer implements IVideoRenderer {
   async renderVideo(job: RenderJob, onProgress?: (percent: number) => void): Promise<RenderResult> {
     const { userId, pageId, productionId, itemId, originalFilePath, template, audioMode = 'ORIGINAL' } = job;
     
-    // Output directory in: uploads/users/{userId}/pages/{pageId}/productions/{productionId}/outputs/
+    // Output directory structure: uploads/users/{userId}/pages/{pageId}/productions/{productionId}/outputs/
     const prodDir = path.join(UPLOADS_DIR, 'users', userId, 'pages', pageId, 'productions', productionId, 'outputs');
     ensureDirectory(prodDir);
     
@@ -74,6 +74,15 @@ export class FFmpegVideoRenderer implements IVideoRenderer {
     const outputPath = path.join(prodDir, outputFilename);
     const publicUrl = `/uploads/users/${userId}/pages/${pageId}/productions/${productionId}/outputs/${outputFilename}`;
     const svgOverlayPath = path.join(prodDir, `overlay_${itemId}.svg`);
+
+    // [PRODUCTION 05] Log access to original video
+    const originalExists = fs.existsSync(originalFilePath);
+    const originalSize = originalExists ? fs.statSync(originalFilePath).size : 0;
+    console.log(`[PRODUCTION 05] Download/acesso ao vídeo original: path=${originalFilePath}, exists=${originalExists}, size=${originalSize} bytes`);
+
+    if (!originalExists || originalSize === 0) {
+      throw new Error(`[PRODUCTION 05] Erro ao acessar vídeo original: arquivo inexistente ou vazio (${originalFilePath})`);
+    }
 
     onProgress?.(10);
 
@@ -84,14 +93,62 @@ export class FFmpegVideoRenderer implements IVideoRenderer {
     let bgHex = rawBg.replace('#', '0x');
     if (!bgHex.startsWith('0x')) bgHex = '0x090a0f';
 
+    // [PRODUCTION 06] Download/acesso à imagem do template
+    let bgImagePath = '';
+    const rawBgImageUrl = job.templateSnapshot?.backgroundImageUrl || 
+                          (job.templateSnapshot as any)?.backgroundImagePath || 
+                          template.backgroundImageUrl || 
+                          template.backgroundImagePath || '';
+
+    if (rawBgImageUrl) {
+      if (rawBgImageUrl.startsWith('http://') || rawBgImageUrl.startsWith('https://')) {
+        const tempBgFile = path.join(prodDir, `bg_temp_${itemId}.png`);
+        try {
+          console.log(`[PRODUCTION 06] Baixando imagem remota do template: ${rawBgImageUrl}`);
+          const fetchRes = await fetch(rawBgImageUrl);
+          if (fetchRes.ok) {
+            const buf = Buffer.from(await fetchRes.arrayBuffer());
+            fs.writeFileSync(tempBgFile, buf);
+            bgImagePath = tempBgFile;
+          }
+        } catch (fetchErr: any) {
+          console.warn(`[PRODUCTION 06] Aviso ao baixar imagem do template: ${fetchErr?.message}`);
+        }
+      } else if (rawBgImageUrl.startsWith('/uploads/')) {
+        const localBg = path.join(UPLOADS_DIR, rawBgImageUrl.replace(/^\/uploads[\/\\]/, ''));
+        if (fs.existsSync(localBg)) {
+          bgImagePath = localBg;
+        }
+      } else if (fs.existsSync(rawBgImageUrl)) {
+        bgImagePath = rawBgImageUrl;
+      }
+    }
+
+    const hasBgImage = !!(bgImagePath && fs.existsSync(bgImagePath));
+    console.log(`[PRODUCTION 06] Download/acesso à imagem do template: hasImage=${hasBgImage}, path=${bgImagePath || 'none (usando cor de fundo ' + rawBg + ')'}`);
+
     // 2. Resolve elements list
     const elements: TemplateElement[] = job.templateSnapshot?.elements || job.templateElements || template.elements || [];
 
-    // 3. Find all VIDEO_PLACEHOLDER elements (Multi-placeholder architecture)
+    // 3. Find VIDEO_PLACEHOLDER
     const placeholders = elements.filter(el => el.type === 'video_placeholder' || (el as any).type === 'VIDEO_PLACEHOLDER');
     
-    // Default placeholder if none found
-    const primaryPlaceholder = placeholders[0] || {
+    // Default placeholder if none found or explicit videoArea in template
+    const templateVideoArea = job.templateSnapshot?.videoArea || template.videoArea;
+    const primaryPlaceholder = placeholders[0] || (templateVideoArea ? {
+      id: 'template_video_area',
+      type: 'video_placeholder' as const,
+      name: 'Área do Vídeo',
+      x: templateVideoArea.x,
+      y: templateVideoArea.y,
+      width: templateVideoArea.width,
+      height: templateVideoArea.height,
+      borderRadius: templateVideoArea.borderRadius || 0,
+      fit: templateVideoArea.fit || 'cover',
+      opacity: 1,
+      zIndex: 1,
+      visible: true
+    } : {
       id: 'default_slot',
       type: 'video_placeholder' as const,
       name: 'Área de Vídeo',
@@ -106,7 +163,7 @@ export class FFmpegVideoRenderer implements IVideoRenderer {
       locked: false,
       fit: 'cover' as const,
       crop: 'crop_to_fit' as const
-    };
+    });
 
     const pX = Math.max(0, Math.round(primaryPlaceholder.x));
     const pY = Math.max(0, Math.round(primaryPlaceholder.y));
@@ -115,9 +172,13 @@ export class FFmpegVideoRenderer implements IVideoRenderer {
     const fitMode = (primaryPlaceholder.fit || (primaryPlaceholder as any).objectFit || 'cover').toLowerCase();
     const borderRadius = primaryPlaceholder.borderRadius || 0;
 
-    onProgress?.(25);
+    // [PRODUCTION 07] Leitura das coordenadas da área do vídeo
+    console.log(`[PRODUCTION 07] Leitura das coordenadas da área do vídeo: x=${pX}, y=${pY}, w=${pW}, h=${pH}, fit=${fitMode}, borderRadius=${borderRadius}px`);
 
-    // 4. Build high-fidelity SVG overlay layer for shapes, texts, images, and visual frames
+    onProgress?.(25);
+    console.log(`[PRODUCTION 10] Progresso da renderização: jobId=${itemId}, progress=25%`);
+
+    // 4. Build high-fidelity SVG overlay layer for shapes, texts, and badges
     const nonVideoElements = elements.filter(el => 
       el.type !== 'video_placeholder' && 
       (el as any).type !== 'VIDEO_PLACEHOLDER' && 
@@ -125,16 +186,14 @@ export class FFmpegVideoRenderer implements IVideoRenderer {
       el.visible !== false
     );
 
-    // Sort by zIndex
     nonVideoElements.sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
 
     let svgInnerContent = '';
 
-    // If placeholder has borderRadius > 0, we can render a neat cutout frame or outline
     if (borderRadius > 0) {
       svgInnerContent += `
-        <!-- Border radius cutout accent for video slot -->
-        <rect x="${pX}" y="${pY}" width="${pW}" height="${pH}" rx="${borderRadius}" ry="${borderRadius}" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="2" />
+        <!-- Border radius accent for video slot -->
+        <rect x="${pX}" y="${pY}" width="${pW}" height="${pH}" rx="${borderRadius}" ry="${borderRadius}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="2" />
       `;
     }
 
@@ -168,11 +227,9 @@ export class FFmpegVideoRenderer implements IVideoRenderer {
 
         svgInnerContent += `
           <g opacity="${opacity}">
-            <!-- Drop shadow -->
             <text x="${textX + 2}" y="${textY + 2}" font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}" font-weight="${fontWeight}" fill="rgba(0,0,0,0.7)" text-anchor="${anchor}">
               ${textContent}
             </text>
-            <!-- Foreground text -->
             <text x="${textX}" y="${textY}" font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}" font-weight="${fontWeight}" fill="${fontColor}" text-anchor="${anchor}">
               ${textContent}
             </text>
@@ -204,59 +261,97 @@ export class FFmpegVideoRenderer implements IVideoRenderer {
       }
     }
 
-    const svgDocument = `<svg xmlns="http://www.w3.org/2000/svg" width="${tWidth}" height="${tHeight}" viewBox="0 0 ${tWidth} ${tHeight}">
-      ${svgInnerContent}
-    </svg>`;
+    const hasSvgElements = svgInnerContent.trim().length > 0;
+    if (hasSvgElements) {
+      const svgDocument = `<svg xmlns="http://www.w3.org/2000/svg" width="${tWidth}" height="${tHeight}" viewBox="0 0 ${tWidth} ${tHeight}">
+        ${svgInnerContent}
+      </svg>`;
+      fs.writeFileSync(svgOverlayPath, svgDocument, 'utf-8');
+    }
 
-    // Save SVG file
-    fs.writeFileSync(svgOverlayPath, svgDocument, 'utf-8');
-
-    onProgress?.(35);
+    onProgress?.(40);
+    console.log(`[PRODUCTION 10] Progresso da renderização: jobId=${itemId}, progress=40%`);
 
     try {
       // 5. Build Video Scaling & Cropping Filter based on Object-Fit
       let scaleFilter = '';
       if (fitMode === 'contain') {
-        // CONTAIN: preserve aspect ratio, pad remaining area with transparent/black
         scaleFilter = `scale=${pW}:${pH}:force_original_aspect_ratio=decrease,pad=${pW}:${pH}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`;
       } else if (fitMode === 'fill') {
-        // FILL: stretch exactly to placeholder dimensions
         scaleFilter = `scale=${pW}:${pH}`;
       } else {
         // COVER (Default): scale to fill box, crop excess
         scaleFilter = `scale=${pW}:${pH}:force_original_aspect_ratio=increase,crop=${pW}:${pH}`;
       }
 
-      // 6. Background canvas filter
-      const bgFilter = `color=c=${bgHex}:s=${tWidth}x${tHeight}:d=12[bg]`;
-
-      // 7. Compose Filter graph:
-      // Input 0: original video
-      // Input 1: SVG overlay
-      const filterGraph = [
-        `[0:v]${scaleFilter}[v_scaled]`,
-        bgFilter,
-        `[bg][v_scaled]overlay=${pX}:${pY}:shortest=1[composed_v]`,
-        `[composed_v][1:v]overlay=0:0[final_v]`
-      ].join(';');
-
-      // 8. Audio configuration
+      // 6. Audio configuration
       let audioFlags = '-c:a aac -b:a 128k -map 0:a?';
       if (audioMode === 'MUTE') {
         audioFlags = '-an';
       }
 
-      onProgress?.(50);
+      // 7. Compose Filter graph & FFmpeg Inputs
+      // Input 0 is always the original video
+      const inputs: string[] = [`-i "${originalFilePath}"`];
+      let filterGraph = '';
+      const isOverlayFrame = template.isOverlayFrame || job.templateSnapshot?.isOverlayFrame || false;
 
-      // 9. Execute FFmpeg Command
-      const ffmpegCmd = `ffmpeg -y -i "${originalFilePath}" -i "${svgOverlayPath}" -filter_complex "${filterGraph}" -map "[final_v]" ${audioFlags} -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -movflags +faststart -shortest "${outputPath}"`;
+      if (hasBgImage) {
+        // Input 1 is the template background image
+        inputs.push(`-loop 1 -i "${bgImagePath}"`);
 
-      console.log(`[FFMPEG RENDER] Running: ${ffmpegCmd}`);
+        if (isOverlayFrame) {
+          // Video sits on base color, frame PNG is on top
+          const bgFilter = `color=c=${bgHex}:s=${tWidth}x${tHeight}:r=30[bg]`;
+          filterGraph = [
+            `[0:v]${scaleFilter}[v_scaled]`,
+            bgFilter,
+            `[bg][v_scaled]overlay=${pX}:${pY}:shortest=1[comp1]`,
+            `[1:v]scale=${tWidth}:${tHeight}[frame]`,
+            `[comp1][frame]overlay=0:0:shortest=1[composed_v]`
+          ].join(';');
+        } else {
+          // Standard: Background image is behind the video, video sits on top at (pX, pY)
+          filterGraph = [
+            `[0:v]${scaleFilter}[v_scaled]`,
+            `[1:v]scale=${tWidth}:${tHeight}[bg]`,
+            `[bg][v_scaled]overlay=${pX}:${pY}:shortest=1[composed_v]`
+          ].join(';');
+        }
+      } else {
+        // No image: solid color canvas base
+        const bgFilter = `color=c=${bgHex}:s=${tWidth}x${tHeight}:r=30[bg]`;
+        filterGraph = [
+          `[0:v]${scaleFilter}[v_scaled]`,
+          bgFilter,
+          `[bg][v_scaled]overlay=${pX}:${pY}:shortest=1[composed_v]`
+        ].join(';');
+      }
+
+      // If SVG overlay exists, add it as another input
+      let finalStreamLabel = 'composed_v';
+      if (hasSvgElements && fs.existsSync(svgOverlayPath)) {
+        const svgInputIndex = inputs.length;
+        inputs.push(`-i "${svgOverlayPath}"`);
+        filterGraph += `;[composed_v][${svgInputIndex}:v]overlay=0:0[final_v]`;
+        finalStreamLabel = 'final_v';
+      }
+
+      // [PRODUCTION 08] Montagem do comando FFmpeg
+      const ffmpegCmd = `ffmpeg -y ${inputs.join(' ')} -filter_complex "${filterGraph}" -map "[${finalStreamLabel}]" ${audioFlags} -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -movflags +faststart -shortest "${outputPath}"`;
+      console.log(`[PRODUCTION 08] Montagem do comando FFmpeg: ${ffmpegCmd}`);
+
+      // [PRODUCTION 09] Execução do FFmpeg
+      console.log(`[PRODUCTION 09] Execução do FFmpeg: jobId=${itemId}, output=${outputPath}`);
+      onProgress?.(60);
+      console.log(`[PRODUCTION 10] Progresso da renderização: jobId=${itemId}, progress=60%`);
+
       await execAsync(ffmpegCmd);
 
       onProgress?.(85);
+      console.log(`[PRODUCTION 10] Progresso da renderização: jobId=${itemId}, progress=85%`);
 
-      // 10. Generate Real Thumbnail from the rendered video
+      // 8. Generate Real Thumbnail from the rendered video
       const thumbFilename = `thumb_${itemId}.jpg`;
       const thumbPath = path.join(prodDir, thumbFilename);
       const thumbPublicUrl = `/uploads/users/${userId}/pages/${pageId}/productions/${productionId}/outputs/${thumbFilename}`;
@@ -267,38 +362,52 @@ export class FFmpegVideoRenderer implements IVideoRenderer {
         console.warn('Thumbnail generation warning:', thumbErr);
       }
 
-      // 11. Cleanup temporary SVG
+      // Cleanup temporary SVG
       if (fs.existsSync(svgOverlayPath)) {
         try { fs.unlinkSync(svgOverlayPath); } catch {}
       }
 
-      // 12. File stats
+      // 9. File verification & stats
       const fileStats = fs.existsSync(outputPath) ? fs.statSync(outputPath) : null;
+      if (!fileStats || fileStats.size === 0) {
+        throw new Error('Arquivo MP4 final não foi gerado ou está vazio após execução do FFmpeg.');
+      }
+
       const duration = job.originalVideo.duration || 10;
 
+      // [PRODUCTION 11] Conclusão da renderização
+      console.log(`[PRODUCTION 11] Conclusão da renderização: jobId=${itemId}, size=${fileStats.size} bytes, duration=${duration}s`);
+
+      // [PRODUCTION 12] Upload do MP4 gerado para o Storage
+      console.log(`[PRODUCTION 12] Upload do MP4 gerado para o Storage: url=${publicUrl}, size=${fileStats.size} bytes`);
+
       onProgress?.(100);
+      console.log(`[PRODUCTION 10] Progresso da renderização: jobId=${itemId}, progress=100%`);
 
       return {
         success: true,
         outputPath,
         outputVideoUrl: publicUrl,
-        thumbnailUrl: fs.existsSync(thumbPath) ? thumbPublicUrl : job.originalVideo.thumbnailUrl,
+        thumbnailUrl: fs.existsSync(thumbPath) ? thumbPublicUrl : (job.originalVideo.thumbnailUrl || ''),
         duration,
         width: tWidth,
         height: tHeight,
-        fileSize: fileStats?.size || 0
+        fileSize: fileStats.size
       };
     } catch (err: any) {
-      console.warn('FFmpeg complex render error, attempting robust fallback:', err?.message);
+      console.warn('Complex filter graph failed, falling back to robust scale & pad:', err?.message);
 
-      // Attempt robust fallback: Scale & Pad into template canvas
+      // Fallback simple scaling command
       try {
         let audioFlags = '-c:a aac -b:a 128k -map 0:a?';
         if (audioMode === 'MUTE') {
           audioFlags = '-an';
         }
 
-        const fallbackCmd = `ffmpeg -y -i "${originalFilePath}" -vf "scale=${pW}:${pH}:force_original_aspect_ratio=decrease,pad=${tWidth}:${tHeight}:(ow-iw)/2:(oh-ih)/2:${bgHex}" ${audioFlags} -c:v libx264 -preset ultrafast -pix_fmt yuv420p -movflags +faststart -shortest "${outputPath}"`;
+        const fallbackCmd = `ffmpeg -y -i "${originalFilePath}" -vf "scale=${pW}:${pH}:force_original_aspect_ratio=decrease,pad=${tWidth}:${tHeight}:(ow-iw)/2:(oh-ih)/2:${bgHex}" ${audioFlags} -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p -movflags +faststart -shortest "${outputPath}"`;
+        console.log(`[PRODUCTION 08] Montagem do comando FFmpeg (Fallback): ${fallbackCmd}`);
+        console.log(`[PRODUCTION 09] Execução do FFmpeg (Fallback): jobId=${itemId}`);
+        
         await execAsync(fallbackCmd);
 
         const thumbFilename = `thumb_${itemId}.jpg`;
@@ -314,6 +423,12 @@ export class FFmpegVideoRenderer implements IVideoRenderer {
         }
 
         const fileStats = fs.existsSync(outputPath) ? fs.statSync(outputPath) : null;
+        if (!fileStats || fileStats.size === 0) {
+          throw new Error('Falha total na renderização MP4 via FFmpeg.');
+        }
+
+        console.log(`[PRODUCTION 11] Conclusão da renderização (Fallback): jobId=${itemId}, size=${fileStats.size} bytes`);
+        console.log(`[PRODUCTION 12] Upload do MP4 gerado para o Storage (Fallback): url=${publicUrl}`);
 
         onProgress?.(100);
 
@@ -321,11 +436,11 @@ export class FFmpegVideoRenderer implements IVideoRenderer {
           success: true,
           outputPath,
           outputVideoUrl: publicUrl,
-          thumbnailUrl: fs.existsSync(thumbPath) ? thumbPublicUrl : job.originalVideo.thumbnailUrl,
+          thumbnailUrl: fs.existsSync(thumbPath) ? thumbPublicUrl : (job.originalVideo.thumbnailUrl || ''),
           duration: job.originalVideo.duration || 10,
           width: tWidth,
           height: tHeight,
-          fileSize: fileStats?.size || 0
+          fileSize: fileStats.size
         };
       } catch (fallbackErr: any) {
         console.error('All FFmpeg render attempts failed for item:', itemId, fallbackErr);

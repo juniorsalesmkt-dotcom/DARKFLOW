@@ -65,6 +65,35 @@ export const upload = multer({
   }
 });
 
+// Image upload storage engine (for template background images and frames)
+const imageStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const userId = (req.headers['x-user-id'] as string) || (req.body?.userId as string) || 'usr_darkflow_demo';
+    const pageId = (req.headers['x-page-id'] as string) || (req.body?.pageId as string) || 'page_memorias';
+    const tplDir = path.join(UPLOADS_DIR, 'users', userId, 'pages', pageId, 'templates');
+    ensureDirectory(tplDir);
+    cb(null, tplDir);
+  },
+  filename: (req, file, cb) => {
+    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    cb(null, `tpl_bg_${Date.now()}_${safeName}`);
+  }
+});
+
+export const uploadImage = multer({
+  storage: imageStorage,
+  limits: {
+    fileSize: 50 * 1024 * 1024 // 50MB
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/') || file.originalname.match(/\.(png|jpe?g|webp|svg)$/i)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Formato inválido de imagem. Permitidos: PNG, JPG, JPEG, WEBP, SVG'));
+    }
+  }
+});
+
 export interface VideoMetadata {
   duration: number;
   width: number;

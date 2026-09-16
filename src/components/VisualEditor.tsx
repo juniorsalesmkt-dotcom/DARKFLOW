@@ -22,7 +22,9 @@ import {
   Check,
   ChevronDown,
   Sparkles,
-  Sliders
+  Sliders,
+  Plus,
+  Upload
 } from 'lucide-react';
 import { Template, TemplateElement, AspectRatioType } from '../types/index.js';
 
@@ -46,8 +48,88 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({
   const [activeTabLeft, setActiveTabLeft] = useState<'elements' | 'layers'>('elements');
   const [isSaving, setIsSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [isUploadingBg, setIsUploadingBg] = useState(false);
+  const bgFileInputRef = useRef<HTMLInputElement>(null);
 
   const canvasRef = useRef<HTMLDivElement>(null);
+
+  // Dragging and resizing state
+  const [dragState, setDragState] = useState<{
+    elementId: string;
+    action: 'move' | 'resize';
+    startX: number;
+    startY: number;
+    initialX: number;
+    initialY: number;
+    initialW: number;
+    initialH: number;
+  } | null>(null);
+
+  // Ensure template with videoArea has a video_placeholder element
+  useEffect(() => {
+    const hasVPlaceholder = currentTemplate.elements.some(
+      e => e.type === 'video_placeholder' || (e as any).type === 'VIDEO_PLACEHOLDER'
+    );
+    if (!hasVPlaceholder && currentTemplate.videoArea) {
+      const vEl: TemplateElement = {
+        id: `el_v_${Date.now()}`,
+        name: 'Área do Vídeo (Placeholder)',
+        type: 'video_placeholder',
+        x: currentTemplate.videoArea.x,
+        y: currentTemplate.videoArea.y,
+        width: currentTemplate.videoArea.width,
+        height: currentTemplate.videoArea.height,
+        borderRadius: currentTemplate.videoArea.borderRadius || 24,
+        fit: currentTemplate.videoArea.fit || 'cover',
+        zIndex: 10,
+        opacity: 1,
+        borderColor: '#8b5cf6',
+        borderWidth: 2
+      };
+      setCurrentTemplate(prev => ({
+        ...prev,
+        elements: [vEl, ...prev.elements]
+      }));
+      setSelectedElementId(vEl.id);
+    }
+  }, []);
+
+  // Global mouse handlers for drag and resize
+  useEffect(() => {
+    if (!dragState) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const dx = (e.clientX - dragState.startX) / zoom;
+      const dy = (e.clientY - dragState.startY) / zoom;
+
+      if (dragState.action === 'move') {
+        const nextX = Math.max(0, Math.min(currentTemplate.width - 20, Math.round(dragState.initialX + dx)));
+        const nextY = Math.max(0, Math.min(currentTemplate.height - 20, Math.round(dragState.initialY + dy)));
+        setCurrentTemplate(prev => ({
+          ...prev,
+          elements: prev.elements.map(el => el.id === dragState.elementId ? { ...el, x: nextX, y: nextY } : el)
+        }));
+      } else if (dragState.action === 'resize') {
+        const nextW = Math.max(80, Math.min(currentTemplate.width, Math.round(dragState.initialW + dx)));
+        const nextH = Math.max(80, Math.min(currentTemplate.height, Math.round(dragState.initialH + dy)));
+        setCurrentTemplate(prev => ({
+          ...prev,
+          elements: prev.elements.map(el => el.id === dragState.elementId ? { ...el, width: nextW, height: nextH } : el)
+        }));
+      }
+    };
+
+    const handleMouseUp = () => {
+      setDragState(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [dragState, zoom, currentTemplate.width, currentTemplate.height]);
 
   // Selected element
   const selectedElement = currentTemplate.elements.find(e => e.id === selectedElementId);
@@ -241,8 +323,29 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({
   const handleSave = async () => {
     setIsSaving(true);
     try {
+      const vSlot = currentTemplate.elements.find(
+        e => e.type === 'video_placeholder' || (e as any).type === 'VIDEO_PLACEHOLDER'
+      );
+      const videoArea = vSlot ? {
+        x: Math.round(vSlot.x),
+        y: Math.round(vSlot.y),
+        width: Math.round(vSlot.width),
+        height: Math.round(vSlot.height),
+        borderRadius: vSlot.borderRadius || 0,
+        fit: vSlot.fit || 'cover'
+      } : (currentTemplate.videoArea || {
+        x: Math.round(currentTemplate.width * 0.05),
+        y: Math.round(currentTemplate.height * 0.15),
+        width: Math.round(currentTemplate.width * 0.9),
+        height: Math.round(currentTemplate.height * 0.7),
+        borderRadius: 24,
+        fit: 'cover'
+      });
+
       await onSave({
         ...currentTemplate,
+        videoArea,
+        thumbnailUrl: currentTemplate.backgroundImageUrl || currentTemplate.thumbnailUrl || '',
         updatedAt: new Date().toISOString()
       });
       setSavedSuccess(true);
@@ -377,7 +480,7 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({
                     onClick={() => addElement('video_placeholder')}
                     className="w-full py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold shadow-xs transition-colors flex items-center justify-center gap-1.5"
                   >
-                    <PlusIcon className="w-3.5 h-3.5" />
+                    <Plus className="w-3.5 h-3.5" />
                     <span>Adicionar Área de Vídeo</span>
                   </button>
                 </div>
@@ -427,6 +530,92 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({
                       className="flex-1 px-2.5 py-1 text-xs rounded bg-[#141827] border border-[#232a40] text-slate-200 font-mono"
                     />
                   </div>
+                </div>
+
+                {/* Background Image / Overlay Frame */}
+                <div className="pt-4 border-t border-[#1e2335] space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-slate-400">Imagem de Fundo / Moldura</label>
+                    {currentTemplate.backgroundImageUrl && (
+                      <button
+                        onClick={() => setCurrentTemplate(prev => ({ ...prev, backgroundImageUrl: undefined, backgroundImagePath: undefined }))}
+                        className="text-[10px] text-rose-400 hover:text-rose-300 transition-colors"
+                      >
+                        Remover
+                      </button>
+                    )}
+                  </div>
+
+                  <input
+                    type="file"
+                    ref={bgFileInputRef}
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      setIsUploadingBg(true);
+                      try {
+                        const formData = new FormData();
+                        formData.append('image', file);
+                        const res = await fetch('/api/templates/upload-image', {
+                          method: 'POST',
+                          body: formData
+                        });
+                        if (!res.ok) throw new Error('Falha no upload da imagem');
+                        const data = await res.json();
+                        setCurrentTemplate(prev => ({
+                          ...prev,
+                          backgroundImageUrl: data.imageUrl,
+                          backgroundImagePath: data.imagePath,
+                          thumbnailUrl: data.imageUrl
+                        }));
+                      } catch (err: any) {
+                        alert(err?.message || 'Erro no upload');
+                      } finally {
+                        setIsUploadingBg(false);
+                        if (bgFileInputRef.current) bgFileInputRef.current.value = '';
+                      }
+                    }}
+                  />
+
+                  {currentTemplate.backgroundImageUrl ? (
+                    <div className="space-y-2">
+                      <div className="relative aspect-16/9 rounded-lg overflow-hidden border border-[#242b40] group">
+                        <img 
+                          src={currentTemplate.backgroundImageUrl} 
+                          alt="Background" 
+                          className="w-full h-full object-cover" 
+                        />
+                        <button
+                          onClick={() => bgFileInputRef.current?.click()}
+                          className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 text-xs font-bold text-white"
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>Trocar Imagem</span>
+                        </button>
+                      </div>
+
+                      <label className="flex items-center gap-2 text-[11px] text-slate-300 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={!!currentTemplate.isOverlayFrame}
+                          onChange={e => setCurrentTemplate(prev => ({ ...prev, isOverlayFrame: e.target.checked }))}
+                          className="rounded border-[#2c344e] bg-[#141827] text-purple-600 focus:ring-purple-500/20"
+                        />
+                        <span>Usar como Moldura de Sobreposição (frente do vídeo)</span>
+                      </label>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => bgFileInputRef.current?.click()}
+                      disabled={isUploadingBg}
+                      className="w-full py-2 px-3 rounded-lg bg-[#141827] hover:bg-[#1b2136] border border-dashed border-[#2b334d] hover:border-purple-500/50 text-xs font-semibold text-slate-300 transition-all flex items-center justify-center gap-2"
+                    >
+                      <Upload className="w-3.5 h-3.5 text-purple-400" />
+                      <span>{isUploadingBg ? 'Enviando imagem...' : 'Carregar Imagem de Fundo'}</span>
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (
@@ -502,6 +691,15 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({
             className="relative transition-all duration-75 overflow-hidden rounded-md shrink-0"
             onClick={() => setSelectedElementId(null)}
           >
+            {/* Background Image (Standard under-layer) */}
+            {currentTemplate.backgroundImageUrl && !currentTemplate.isOverlayFrame && (
+              <img
+                src={currentTemplate.backgroundImageUrl}
+                alt="Background"
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none z-0"
+              />
+            )}
+
             {/* Render Elements */}
             {currentTemplate.elements.map(el => {
               if (el.hidden) return null;
@@ -519,7 +717,7 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({
                 border: el.borderColor && el.borderWidth 
                   ? `${Math.max(1, (el.borderWidth || 1) * zoom)}px solid ${el.borderColor}`
                   : undefined,
-                cursor: el.locked ? 'default' : 'pointer'
+                cursor: el.locked ? 'default' : 'move'
               };
 
               return (
@@ -530,11 +728,50 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({
                     e.stopPropagation();
                     setSelectedElementId(el.id);
                   }}
+                  onMouseDown={e => {
+                    if (el.locked) return;
+                    e.stopPropagation();
+                    setSelectedElementId(el.id);
+                    setDragState({
+                      elementId: el.id,
+                      action: 'move',
+                      startX: e.clientX,
+                      startY: e.clientY,
+                      initialX: el.x,
+                      initialY: el.y,
+                      initialW: el.width,
+                      initialH: el.height
+                    });
+                  }}
                   className={`group ${isSelected ? 'ring-2 ring-purple-500 ring-offset-1 ring-offset-black' : 'hover:ring-1 hover:ring-indigo-400/50'}`}
                 >
+                  {/* Resize Handle for Selected Element */}
+                  {isSelected && !el.locked && (
+                    <div
+                      onMouseDown={e => {
+                        e.stopPropagation();
+                        setDragState({
+                          elementId: el.id,
+                          action: 'resize',
+                          startX: e.clientX,
+                          startY: e.clientY,
+                          initialX: el.x,
+                          initialY: el.y,
+                          initialW: el.width,
+                          initialH: el.height
+                        });
+                      }}
+                      className="absolute -bottom-1.5 -right-1.5 w-3.5 h-3.5 bg-purple-500 border-2 border-white rounded-full cursor-se-resize z-50 shadow-md"
+                      title="Redimensionar área"
+                    />
+                  )}
+
                   {/* VIDEO PLACEHOLDER */}
                   {el.type === 'video_placeholder' && (
-                    <div className="w-full h-full relative overflow-hidden bg-black/70 flex items-center justify-center">
+                    <div 
+                      style={{ borderRadius: el.borderRadius ? `${el.borderRadius * zoom}px` : undefined }}
+                      className="w-full h-full relative overflow-hidden bg-black/70 flex items-center justify-center"
+                    >
                       {previewVideoActive ? (
                         <div className="w-full h-full relative">
                           <img
@@ -608,6 +845,15 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({
                 </div>
               );
             })}
+
+            {/* Overlay Frame (over elements/video) */}
+            {currentTemplate.backgroundImageUrl && currentTemplate.isOverlayFrame && (
+              <img
+                src={currentTemplate.backgroundImageUrl}
+                alt="Overlay Frame"
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none z-40"
+              />
+            )}
           </div>
         </div>
 
@@ -683,15 +929,48 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({
                     </select>
                   </div>
                   <div>
-                    <label className="text-[10px] text-slate-400 block mb-1">Corte / Crop</label>
-                    <select
-                      value={selectedElement.crop || 'crop_to_fit'}
-                      onChange={e => updateSelectedProperty('crop', e.target.value)}
-                      className="w-full px-2 py-1.5 rounded bg-[#141827] border border-[#232a40] text-slate-200 text-xs"
-                    >
-                      <option value="crop_to_fit">Cortar para encaixar perfeitamente</option>
-                      <option value="none">Sem corte (Original)</option>
-                    </select>
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
+                      <span>Arredondamento dos Cantos</span>
+                      <span className="font-mono text-purple-300">{selectedElement.borderRadius || 0}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="80"
+                      value={selectedElement.borderRadius || 0}
+                      onChange={e => updateSelectedProperty('borderRadius', parseInt(e.target.value, 10))}
+                      className="w-full accent-purple-500 cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 block mb-1.5 font-bold uppercase">Atalhos Rápidos de Área</label>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const size = Math.min(currentTemplate.width - 80, 960);
+                          updateSelectedProperty('width', size);
+                          updateSelectedProperty('height', size);
+                          updateSelectedProperty('x', Math.round((currentTemplate.width - size) / 2));
+                          updateSelectedProperty('y', Math.round((currentTemplate.height - size) / 2));
+                        }}
+                        className="p-1.5 rounded bg-[#141827] hover:bg-[#1f253b] border border-[#242b40] text-[10px] font-mono text-slate-300 text-center"
+                      >
+                        Centro (1:1)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          updateSelectedProperty('width', currentTemplate.width);
+                          updateSelectedProperty('height', currentTemplate.height);
+                          updateSelectedProperty('x', 0);
+                          updateSelectedProperty('y', 0);
+                        }}
+                        className="p-1.5 rounded bg-[#141827] hover:bg-[#1f253b] border border-[#242b40] text-[10px] font-mono text-slate-300 text-center"
+                      >
+                        Tela Cheia (Full)
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -846,8 +1125,56 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({
               </div>
             </div>
           ) : (
-            <div className="py-8 text-center text-slate-500 text-xs">
-              <p>Clique em um elemento no canvas ou na lista de camadas para editar suas propriedades.</p>
+            /* Template Global Properties */
+            <div className="space-y-4 text-xs">
+              <div className="p-3 rounded-xl bg-[#141827] border border-[#22273b] space-y-3">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Dimensões do Template</span>
+                <div className="flex items-center justify-between text-slate-300">
+                  <span>Resolução:</span>
+                  <span className="font-mono text-purple-300">{currentTemplate.width} x {currentTemplate.height}</span>
+                </div>
+                <div className="flex items-center justify-between text-slate-300">
+                  <span>Proporção:</span>
+                  <span className="font-mono text-purple-300">{currentTemplate.aspectRatio}</span>
+                </div>
+              </div>
+
+              {/* Area de Vídeo Status */}
+              {currentTemplate.elements.some(e => e.type === 'video_placeholder') ? (
+                <div className="p-3 rounded-xl bg-purple-950/20 border border-purple-500/30">
+                  <span className="text-[10px] font-extrabold text-purple-300 uppercase font-mono block mb-1">
+                    Área de Vídeo Ativa
+                  </span>
+                  <p className="text-[11px] text-slate-400 mb-2">
+                    O template já possui um espaço configurado para o vídeo.
+                  </p>
+                  <button
+                    onClick={() => {
+                      const vEl = currentTemplate.elements.find(e => e.type === 'video_placeholder');
+                      if (vEl) setSelectedElementId(vEl.id);
+                    }}
+                    className="w-full py-1.5 rounded-lg bg-purple-600/80 hover:bg-purple-600 text-white text-xs font-bold transition-colors"
+                  >
+                    Selecionar e Ajustar Área
+                  </button>
+                </div>
+              ) : (
+                <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-500/30">
+                  <span className="text-[10px] font-extrabold text-amber-300 uppercase font-mono block mb-1">
+                    Sem Área de Vídeo
+                  </span>
+                  <p className="text-[11px] text-slate-400 mb-2">
+                    Adicione o enquadramento onde o vídeo final será renderizado.
+                  </p>
+                  <button
+                    onClick={() => addElement('video_placeholder')}
+                    className="w-full py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Adicionar Área de Vídeo</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -856,11 +1183,3 @@ export const VisualEditor: React.FC<VisualEditorProps> = ({
     </div>
   );
 };
-
-function PlusIcon(props: any) {
-  return (
-    <svg {...props} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-    </svg>
-  );
-}

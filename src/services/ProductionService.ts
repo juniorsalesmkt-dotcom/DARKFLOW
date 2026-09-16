@@ -123,20 +123,35 @@ export class ProductionService {
     // 1. Fetch template to take an immutable snapshot
     let templateName = 'Template';
     let templateSnapshot: TemplateSnapshot | undefined = undefined;
+    let fullTemplate: any = undefined;
 
     try {
-      const template = await TemplateService.getTemplate(data.templateId);
-      if (template) {
-        templateName = template.name;
+      fullTemplate = await TemplateService.getTemplate(data.templateId);
+      if (fullTemplate) {
+        templateName = fullTemplate.name;
         templateSnapshot = {
-          width: template.width || 1080,
-          height: template.height || 1920,
-          background: template.background || '#090a0f',
-          elements: template.elements || []
+          width: fullTemplate.width || 1080,
+          height: fullTemplate.height || 1920,
+          background: fullTemplate.background || '#090a0f',
+          backgroundImageUrl: fullTemplate.backgroundImageUrl,
+          backgroundImagePath: fullTemplate.backgroundImagePath,
+          isOverlayFrame: fullTemplate.isOverlayFrame,
+          videoArea: fullTemplate.videoArea,
+          elements: fullTemplate.elements || []
         };
       }
     } catch (tErr) {
       console.warn('Could not fetch template for snapshot:', tErr);
+    }
+
+    // 1.1 Fetch selected video metadata objects
+    let selectedVideos: any[] = [];
+    try {
+      const vPromises = data.videoIds.map(vid => VideoService.getVideo(vid));
+      const resolved = await Promise.all(vPromises);
+      selectedVideos = resolved.filter(Boolean);
+    } catch (vErr) {
+      console.warn('Could not pre-fetch videos for production:', vErr);
     }
 
     const prodTitle = data.title || `Produção #${Date.now().toString().slice(-4)}`;
@@ -188,8 +203,10 @@ export class ProductionService {
           userId,
           pageId: data.pageId,
           templateId: data.templateId,
+          template: fullTemplate,
           templateSnapshot,
           videoIds: data.videoIds,
+          videos: selectedVideos,
           title: prodTitle,
           name: prodTitle,
           audioMode: data.audioMode || 'ORIGINAL'
